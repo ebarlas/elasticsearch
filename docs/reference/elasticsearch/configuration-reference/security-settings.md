@@ -771,12 +771,12 @@ In addition to the [settings that are valid for all realms](#ref-realm-settings)
 
     This setting is ignored if either `username_rdn_oid` or `username_rdn_name` is set.
 
-`username_rdn_oid`
+`username_rdn_oid` {applies_to}`stack: ga 9.1`
 :   ([Static](docs-content://deploy-manage/stack-settings.md#static-cluster-setting)) The relative distinguished name (RDN) attribute OID used to extract the username from the certificate DN. The username is used for auditing and logging. The username can also be used with the [role mapping API](docs-content://deploy-manage/users-roles/cluster-or-deployment-auth/mapping-users-groups-to-roles.md) and [authorization delegation](docs-content://deploy-manage/users-roles/cluster-or-deployment-auth/authorization-delegation.md). The value of the most specific RDN matching this attribute OID is used as the username.
 
     This setting takes precedent over `username_pattern`. You cannot use this setting and `username_rdn_name` at the same time.
 
-`username_rdn_name`
+`username_rdn_name` {applies_to}`stack: ga 9.1`
 :   ([Static](docs-content://deploy-manage/stack-settings.md#static-cluster-setting)) The relative distinguished name (RDN) attribute name used to extract the username from the certificate DN. The username is used for auditing and logging. The username can also be used with the [role mapping API](docs-content://deploy-manage/users-roles/cluster-or-deployment-auth/mapping-users-groups-to-roles.md) and [authorization delegation](docs-content://deploy-manage/users-roles/cluster-or-deployment-auth/authorization-delegation.md). The value of the most specific RDN matching this attribute name is used as the username.
 
     This setting takes precedent over `username_pattern`. You cannot use this setting and `username_rdn_oid` at the same time.
