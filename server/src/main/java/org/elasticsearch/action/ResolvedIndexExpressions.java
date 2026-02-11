@@ -17,7 +17,6 @@ import org.elasticsearch.common.io.stream.Writeable;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -55,12 +54,12 @@ public record ResolvedIndexExpressions(List<ResolvedIndexExpression> expressions
         /**
          * Add a new resolved expression.
          * @param original         the original expression that was resolved -- may be blank for "access all" cases
-         * @param localExpressions is a HashSet as an optimization -- the set needs to be mutable, and we want to avoid copying it.
-         *                         May be empty.
+         * @param localExpressions the set of local expressions. May be empty. The set is stored by reference and must remain
+         *                         mutable during the build phase (see {@link #excludeFromLocalExpressions}).
          */
         public void addExpressions(
             String original,
-            HashSet<String> localExpressions,
+            Set<String> localExpressions,
             ResolvedIndexExpression.LocalIndexResolutionResult resolutionResult,
             Set<String> remoteExpressions
         ) {
@@ -104,8 +103,15 @@ public record ResolvedIndexExpressions(List<ResolvedIndexExpression> expressions
         }
 
         public ResolvedIndexExpressions build() {
-            // TODO make all sets on `expressions` immutable
-            return new ResolvedIndexExpressions(expressions);
+            final List<ResolvedIndexExpression> immutableExpressions = expressions.stream().map(expr -> {
+                final LocalExpressions local = expr.localExpressions();
+                return new ResolvedIndexExpression(
+                    expr.original(),
+                    new LocalExpressions(Set.copyOf(local.indices()), local.localIndexResolutionResult(), local.exception()),
+                    Set.copyOf(expr.remoteExpressions())
+                );
+            }).toList();
+            return new ResolvedIndexExpressions(immutableExpressions);
         }
     }
 }
