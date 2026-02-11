@@ -17,6 +17,7 @@ import org.elasticsearch.common.io.stream.Writeable;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
@@ -50,17 +51,25 @@ public record ResolvedIndexExpressions(List<ResolvedIndexExpression> expressions
     }
 
     public static final class Builder {
-        private final List<ResolvedIndexExpression> expressions = new ArrayList<>();
+
+        private record MutableEntry(
+            String original,
+            Set<String> localExpressions,
+            ResolvedIndexExpression.LocalIndexResolutionResult resolutionResult,
+            Set<String> remoteExpressions
+        ) {}
+
+        private final List<MutableEntry> mutableEntries = new ArrayList<>();
+        private final List<ResolvedIndexExpression> immutableEntries = new ArrayList<>();
 
         /**
          * Add a new resolved expression.
          * @param original         the original expression that was resolved -- may be blank for "access all" cases
-         * @param localExpressions is a HashSet as an optimization -- the set needs to be mutable, and we want to avoid copying it.
-         *                         May be empty.
+         * @param localExpressions the resolved local index expressions. May be empty.
          */
         public void addExpressions(
             String original,
-            HashSet<String> localExpressions,
+            Set<String> localExpressions,
             ResolvedIndexExpression.LocalIndexResolutionResult resolutionResult,
             Set<String> remoteExpressions
         ) {
@@ -68,9 +77,7 @@ public record ResolvedIndexExpressions(List<ResolvedIndexExpression> expressions
             Objects.requireNonNull(localExpressions);
             Objects.requireNonNull(resolutionResult);
             Objects.requireNonNull(remoteExpressions);
-            expressions.add(
-                new ResolvedIndexExpression(original, new LocalExpressions(localExpressions, resolutionResult, null), remoteExpressions)
-            );
+            mutableEntries.add(new MutableEntry(original, new HashSet<>(localExpressions), resolutionResult, remoteExpressions));
         }
 
         /**
@@ -78,34 +85,47 @@ public record ResolvedIndexExpressions(List<ResolvedIndexExpression> expressions
          * @param expression       the expression you want to add.
          */
         public void addExpression(ResolvedIndexExpression expression) {
-            expressions.add(expression);
+            immutableEntries.add(expression);
         }
 
         public void addRemoteExpressions(String original, Set<String> remoteExpressions) {
             Objects.requireNonNull(original);
             Objects.requireNonNull(remoteExpressions);
-            expressions.add(new ResolvedIndexExpression(original, LocalExpressions.NONE, remoteExpressions));
+            immutableEntries.add(new ResolvedIndexExpression(original, LocalExpressions.NONE, remoteExpressions));
         }
 
         /**
-         * Exclude the given expressions from the local expressions of all prior added {@link ResolvedIndexExpression}.
+         * Exclude the given expressions from the local expressions of all prior added mutable entries.
          */
         public void excludeFromLocalExpressions(Set<String> expressionsToExclude) {
             Objects.requireNonNull(expressionsToExclude);
             if (expressionsToExclude.isEmpty() == false) {
-                for (ResolvedIndexExpression prior : expressions) {
-                    final Set<String> localExpressions = prior.localExpressions().indices();
-                    if (localExpressions.isEmpty()) {
+                for (MutableEntry entry : mutableEntries) {
+                    if (entry.localExpressions.isEmpty()) {
                         continue;
                     }
-                    localExpressions.removeAll(expressionsToExclude);
+                    entry.localExpressions.removeAll(expressionsToExclude);
                 }
             }
         }
 
         public ResolvedIndexExpressions build() {
-            // TODO make all sets on `expressions` immutable
-            return new ResolvedIndexExpressions(expressions);
+            final List<ResolvedIndexExpression> expressions = new ArrayList<>(mutableEntries.size() + immutableEntries.size());
+            for (MutableEntry entry : mutableEntries) {
+                expressions.add(
+                    new ResolvedIndexExpression(
+                        entry.original,
+                        new LocalExpressions(
+                            Collections.unmodifiableSet(new HashSet<>(entry.localExpressions)),
+                            entry.resolutionResult,
+                            null
+                        ),
+                        Collections.unmodifiableSet(new HashSet<>(entry.remoteExpressions))
+                    )
+                );
+            }
+            expressions.addAll(immutableEntries);
+            return new ResolvedIndexExpressions(List.copyOf(expressions));
         }
     }
 }
