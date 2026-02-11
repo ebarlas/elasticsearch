@@ -17,7 +17,7 @@ import org.elasticsearch.common.io.stream.Writeable;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -55,12 +55,11 @@ public record ResolvedIndexExpressions(List<ResolvedIndexExpression> expressions
         /**
          * Add a new resolved expression.
          * @param original         the original expression that was resolved -- may be blank for "access all" cases
-         * @param localExpressions is a HashSet as an optimization -- the set needs to be mutable, and we want to avoid copying it.
-         *                         May be empty.
+         * @param localExpressions the set of local expressions. May be empty.
          */
         public void addExpressions(
             String original,
-            HashSet<String> localExpressions,
+            Set<String> localExpressions,
             ResolvedIndexExpression.LocalIndexResolutionResult resolutionResult,
             Set<String> remoteExpressions
         ) {
@@ -93,25 +92,50 @@ public record ResolvedIndexExpressions(List<ResolvedIndexExpression> expressions
         public void excludeFromLocalExpressions(Set<String> expressionsToExclude) {
             Objects.requireNonNull(expressionsToExclude);
             if (expressionsToExclude.isEmpty() == false) {
-                final var iter = expressions.iterator();
-                while (iter.hasNext()) {
-                    final ResolvedIndexExpression current = iter.next();
+                final List<ResolvedIndexExpression> rebuilt = new ArrayList<>(expressions.size());
+                for (ResolvedIndexExpression current : expressions) {
                     if (expressionsToExclude.contains(current.original())) {
-                        iter.remove();
                         continue;
                     }
                     final Set<String> localExpressions = current.localExpressions().indices();
                     if (localExpressions.isEmpty()) {
+                        rebuilt.add(current);
                         continue;
                     }
-                    localExpressions.removeAll(expressionsToExclude);
+                    final Set<String> filtered = new LinkedHashSet<>(localExpressions);
+                    filtered.removeAll(expressionsToExclude);
+                    rebuilt.add(
+                        new ResolvedIndexExpression(
+                            current.original(),
+                            new LocalExpressions(
+                                filtered,
+                                current.localExpressions().localIndexResolutionResult(),
+                                current.localExpressions().exception()
+                            ),
+                            current.remoteExpressions()
+                        )
+                    );
                 }
+                expressions.clear();
+                expressions.addAll(rebuilt);
             }
         }
 
         public ResolvedIndexExpressions build() {
-            // TODO make all sets on `expressions` immutable
-            return new ResolvedIndexExpressions(expressions);
+            final List<ResolvedIndexExpression> immutableExpressions = expressions.stream().map(expr -> {
+                final Set<String> immutableLocal = Set.copyOf(expr.localExpressions().indices());
+                final Set<String> immutableRemote = Set.copyOf(expr.remoteExpressions());
+                return new ResolvedIndexExpression(
+                    expr.original(),
+                    new LocalExpressions(
+                        immutableLocal,
+                        expr.localExpressions().localIndexResolutionResult(),
+                        expr.localExpressions().exception()
+                    ),
+                    immutableRemote
+                );
+            }).toList();
+            return new ResolvedIndexExpressions(immutableExpressions);
         }
     }
 }
