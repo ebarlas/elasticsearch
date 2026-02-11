@@ -55,12 +55,11 @@ public record ResolvedIndexExpressions(List<ResolvedIndexExpression> expressions
         /**
          * Add a new resolved expression.
          * @param original         the original expression that was resolved -- may be blank for "access all" cases
-         * @param localExpressions is a HashSet as an optimization -- the set needs to be mutable, and we want to avoid copying it.
-         *                         May be empty.
+         * @param localExpressions the resolved local expressions. May be empty.
          */
         public void addExpressions(
             String original,
-            HashSet<String> localExpressions,
+            Set<String> localExpressions,
             ResolvedIndexExpression.LocalIndexResolutionResult resolutionResult,
             Set<String> remoteExpressions
         ) {
@@ -68,8 +67,14 @@ public record ResolvedIndexExpressions(List<ResolvedIndexExpression> expressions
             Objects.requireNonNull(localExpressions);
             Objects.requireNonNull(resolutionResult);
             Objects.requireNonNull(remoteExpressions);
+            final HashSet<String> localExpressionsMutable = new HashSet<>(localExpressions);
+            final Set<String> remoteExpressionsCopy = new HashSet<>(remoteExpressions);
             expressions.add(
-                new ResolvedIndexExpression(original, new LocalExpressions(localExpressions, resolutionResult, null), remoteExpressions)
+                new ResolvedIndexExpression(
+                    original,
+                    new LocalExpressions(localExpressionsMutable, resolutionResult, null),
+                    remoteExpressionsCopy
+                )
             );
         }
 
@@ -84,7 +89,7 @@ public record ResolvedIndexExpressions(List<ResolvedIndexExpression> expressions
         public void addRemoteExpressions(String original, Set<String> remoteExpressions) {
             Objects.requireNonNull(original);
             Objects.requireNonNull(remoteExpressions);
-            expressions.add(new ResolvedIndexExpression(original, LocalExpressions.NONE, remoteExpressions));
+            expressions.add(new ResolvedIndexExpression(original, LocalExpressions.NONE, new HashSet<>(remoteExpressions)));
         }
 
         /**
@@ -104,8 +109,34 @@ public record ResolvedIndexExpressions(List<ResolvedIndexExpression> expressions
         }
 
         public ResolvedIndexExpressions build() {
-            // TODO make all sets on `expressions` immutable
-            return new ResolvedIndexExpressions(expressions);
+            if (expressions.isEmpty()) {
+                return new ResolvedIndexExpressions(List.of());
+            }
+
+            final ArrayList<ResolvedIndexExpression> expressionsCopy = new ArrayList<>(expressions.size());
+            for (ResolvedIndexExpression expression : expressions) {
+                final LocalExpressions local = expression.localExpressions();
+                final Set<String> localIndices = local.indices();
+                final Set<String> localIndicesImmutable = localIndices.isEmpty() ? Set.of() : Set.copyOf(localIndices);
+
+                final LocalExpressions localImmutable;
+                if (local == LocalExpressions.NONE) {
+                    localImmutable = LocalExpressions.NONE;
+                } else {
+                    localImmutable = new LocalExpressions(
+                        localIndicesImmutable,
+                        local.localIndexResolutionResult(),
+                        local.exception()
+                    );
+                }
+
+                final Set<String> remote = expression.remoteExpressions();
+                final Set<String> remoteImmutable = remote.isEmpty() ? Set.of() : Set.copyOf(remote);
+
+                expressionsCopy.add(new ResolvedIndexExpression(expression.original(), localImmutable, remoteImmutable));
+            }
+
+            return new ResolvedIndexExpressions(List.copyOf(expressionsCopy));
         }
     }
 }
