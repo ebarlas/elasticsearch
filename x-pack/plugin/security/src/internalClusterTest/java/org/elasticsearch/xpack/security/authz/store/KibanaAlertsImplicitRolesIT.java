@@ -20,8 +20,12 @@ import org.elasticsearch.xpack.core.security.action.privilege.PutPrivilegesReque
 import org.elasticsearch.xpack.core.security.action.role.GetRolesRequestBuilder;
 import org.elasticsearch.xpack.core.security.action.role.GetRolesResponse;
 import org.elasticsearch.xpack.core.security.action.role.PutRoleRequestBuilder;
+import org.elasticsearch.xpack.core.security.action.user.HasPrivilegesAction;
+import org.elasticsearch.xpack.core.security.action.user.HasPrivilegesRequest;
+import org.elasticsearch.xpack.core.security.action.user.HasPrivilegesResponse;
 import org.elasticsearch.xpack.core.security.action.user.PutUserRequestBuilder;
 import org.elasticsearch.xpack.core.security.authz.RoleDescriptor;
+import org.elasticsearch.xpack.core.security.authz.permission.ResourcePrivileges;
 import org.elasticsearch.xpack.core.security.authz.privilege.ApplicationPrivilegeDescriptor;
 import org.junit.Before;
 
@@ -674,5 +678,40 @@ public class KibanaAlertsImplicitRolesIT extends SecuritySingleNodeTestCase {
                 );
             }
         }
+    }
+
+    /**
+     * Req 4: The Has Privileges API must reflect that the user has implicit read access to
+     * {@code .alerts-*} indices when that access is derived from application privileges.
+     */
+    public void testReq4_hasPrivilegesReflectsImplicitAccess() throws Exception {
+        HasPrivilegesRequest hasPrivReq = new HasPrivilegesRequest();
+        hasPrivReq.username(ALERTS_USER);
+        hasPrivReq.clusterPrivileges(new String[0]);
+        hasPrivReq.indexPrivileges(
+            RoleDescriptor.IndicesPrivileges.builder().indices(ALERTS_INDEX).privileges("read").build()
+        );
+        hasPrivReq.applicationPrivileges(new RoleDescriptor.ApplicationResourcePrivileges[0]);
+
+        Client alertsClient = client().filterWithHeader(
+            Map.of("Authorization", basicAuthHeaderValue(ALERTS_USER, new SecureString(TEST_PASSWORD_SECURE_STRING.getChars())))
+        );
+        HasPrivilegesResponse response = alertsClient.execute(HasPrivilegesAction.INSTANCE, hasPrivReq).actionGet();
+
+        assertThat("Has-privileges check should report complete match", response.isCompleteMatch(), equalTo(true));
+
+        Set<ResourcePrivileges> indexPrivs = response.getIndexPrivileges();
+        boolean foundAlerts = false;
+        for (ResourcePrivileges rp : indexPrivs) {
+            if (ALERTS_INDEX.equals(rp.getResource())) {
+                foundAlerts = true;
+                assertThat(
+                    "User should have implicit read on " + ALERTS_INDEX,
+                    rp.getPrivileges().get("read"),
+                    equalTo(true)
+                );
+            }
+        }
+        assertTrue("Expected " + ALERTS_INDEX + " in has-privileges index response", foundAlerts);
     }
 }
