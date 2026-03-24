@@ -220,6 +220,7 @@ import org.elasticsearch.xpack.core.security.authz.accesscontrol.SecurityIndexRe
 import org.elasticsearch.xpack.core.security.authz.permission.FieldPermissions;
 import org.elasticsearch.xpack.core.security.authz.permission.FieldPermissionsCache;
 import org.elasticsearch.xpack.core.security.authz.permission.SimpleRole;
+import org.elasticsearch.xpack.core.security.authz.store.KibanaAlertsImplicitRoles;
 import org.elasticsearch.xpack.core.security.authz.store.ReservedRolesStore;
 import org.elasticsearch.xpack.core.security.authz.store.RoleRetrievalResult;
 import org.elasticsearch.xpack.core.security.support.Automatons;
@@ -1056,7 +1057,8 @@ public class Security extends Plugin
             dlsBitsetCache.get(),
             restrictedIndices,
             buildRoleBuildingExecutor(threadPool, settings),
-            new DeprecationRoleDescriptorConsumer(clusterService, projectResolver, threadPool)
+            new DeprecationRoleDescriptorConsumer(clusterService, projectResolver, threadPool),
+            List.of(new KibanaAlertsImplicitRoles())
         );
         systemIndices.getMainIndexManager().addStateListener(allRolesStore::onSecurityIndexStateChange);
 

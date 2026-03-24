@@ -103,6 +103,7 @@ import org.elasticsearch.xpack.core.security.authz.privilege.IndexPrivilegeTests
 import org.elasticsearch.xpack.core.security.authz.privilege.NamedClusterPrivilege;
 import org.elasticsearch.xpack.core.security.authz.restriction.Workflow;
 import org.elasticsearch.xpack.core.security.authz.restriction.WorkflowResolver;
+import org.elasticsearch.xpack.core.security.authz.store.KibanaAlertsImplicitRoles;
 import org.elasticsearch.xpack.core.security.authz.store.ReservedRolesStore;
 import org.elasticsearch.xpack.core.security.authz.store.RoleReference;
 import org.elasticsearch.xpack.core.security.authz.store.RoleReferenceIntersection;
@@ -748,7 +749,8 @@ public class CompositeRolesStoreTests extends ESTestCase {
             buildBitsetCache(),
             TestRestrictedIndices.RESTRICTED_INDICES,
             EsExecutors.DIRECT_EXECUTOR_SERVICE,
-            mock()
+            mock(),
+            List.of()
         );
 
         assertFalse(compositeRolesStore.shouldForkRoleBuilding(Set.of()));
@@ -824,7 +826,8 @@ public class CompositeRolesStoreTests extends ESTestCase {
             documentSubsetBitsetCache,
             TestRestrictedIndices.RESTRICTED_INDICES,
             EsExecutors.DIRECT_EXECUTOR_SERVICE,
-            effectiveRoleDescriptors::set
+            effectiveRoleDescriptors::set,
+            List.of()
         );
         verify(fileRolesStore).addListener(anyConsumer()); // adds a listener in ctor
 
@@ -1275,6 +1278,170 @@ public class CompositeRolesStoreTests extends ESTestCase {
             )
         );
         assertThat(e.getMessage(), containsString("combining role descriptors with and without restriction is not allowed"));
+    }
+
+    public void testImplicitRoleContributorAddsAlertsIndexPrivilege() {
+        Collection<ApplicationPrivilegeDescriptor> storedPrivileges = List.of(
+            new ApplicationPrivilegeDescriptor("kibana-.kibana", "feature_alerting_read", Set.of("alerts:read"), Map.of())
+        );
+
+        RoleDescriptor roleDescriptor = new RoleDescriptor(
+            "test_role",
+            null,
+            null,
+            new RoleDescriptor.ApplicationResourcePrivileges[] {
+                RoleDescriptor.ApplicationResourcePrivileges.builder()
+                    .application("kibana-.kibana")
+                    .privileges("feature_alerting_read")
+                    .resources("space:default")
+                    .build() },
+            null,
+            null,
+            null,
+            null
+        );
+
+        final FieldPermissionsCache fieldPermsCache = new FieldPermissionsCache(Settings.EMPTY);
+        final NativePrivilegeStore privilegeStore = mock(NativePrivilegeStore.class);
+        doAnswer((invocationOnMock) -> {
+            @SuppressWarnings("unchecked")
+            ActionListener<Collection<ApplicationPrivilegeDescriptor>> callback = (ActionListener<
+                Collection<ApplicationPrivilegeDescriptor>>) invocationOnMock.getArguments()[3];
+            callback.onResponse(storedPrivileges);
+            return null;
+        }).when(privilegeStore).getPrivileges(isASet(), isASet(), eq(false), anyActionListener());
+
+        final PlainActionFuture<Role> future = new PlainActionFuture<>();
+        CompositeRolesStore.buildRoleFromDescriptors(
+            Set.of(roleDescriptor),
+            fieldPermsCache,
+            privilegeStore,
+            TestRestrictedIndices.RESTRICTED_INDICES,
+            List.of(new KibanaAlertsImplicitRoles()),
+            future
+        );
+        Role role = future.actionGet();
+
+        IndicesPermission.Group[] groups = role.indices().groups();
+        boolean foundAlertsGroup = false;
+        for (IndicesPermission.Group group : groups) {
+            for (String index : group.indices()) {
+                if (".alerts-*".equals(index)) {
+                    foundAlertsGroup = true;
+                    Set<BytesReference> queries = group.getQuery();
+                    assertNotNull(queries);
+                    assertFalse(queries.isEmpty());
+                    String query = queries.iterator().next().utf8ToString();
+                    assertTrue(query.contains("kibana.space_ids"));
+                    assertTrue(query.contains("default"));
+                }
+            }
+        }
+        assertTrue("Expected to find .alerts-* index group with DLS query", foundAlertsGroup);
+    }
+
+    public void testImplicitRoleContributorWithWildcardResourceNoDls() {
+        Collection<ApplicationPrivilegeDescriptor> storedPrivileges = List.of(
+            new ApplicationPrivilegeDescriptor("kibana-.kibana", "feature_alerting_read", Set.of("alerts:read"), Map.of())
+        );
+
+        RoleDescriptor roleDescriptor = new RoleDescriptor(
+            "test_role",
+            null,
+            null,
+            new RoleDescriptor.ApplicationResourcePrivileges[] {
+                RoleDescriptor.ApplicationResourcePrivileges.builder()
+                    .application("kibana-.kibana")
+                    .privileges("feature_alerting_read")
+                    .resources("*")
+                    .build() },
+            null,
+            null,
+            null,
+            null
+        );
+
+        final FieldPermissionsCache fieldPermsCache = new FieldPermissionsCache(Settings.EMPTY);
+        final NativePrivilegeStore privilegeStore = mock(NativePrivilegeStore.class);
+        doAnswer((invocationOnMock) -> {
+            @SuppressWarnings("unchecked")
+            ActionListener<Collection<ApplicationPrivilegeDescriptor>> callback = (ActionListener<
+                Collection<ApplicationPrivilegeDescriptor>>) invocationOnMock.getArguments()[3];
+            callback.onResponse(storedPrivileges);
+            return null;
+        }).when(privilegeStore).getPrivileges(isASet(), isASet(), eq(false), anyActionListener());
+
+        final PlainActionFuture<Role> future = new PlainActionFuture<>();
+        CompositeRolesStore.buildRoleFromDescriptors(
+            Set.of(roleDescriptor),
+            fieldPermsCache,
+            privilegeStore,
+            TestRestrictedIndices.RESTRICTED_INDICES,
+            List.of(new KibanaAlertsImplicitRoles()),
+            future
+        );
+        Role role = future.actionGet();
+
+        IndicesPermission.Group[] groups = role.indices().groups();
+        boolean foundAlertsGroup = false;
+        for (IndicesPermission.Group group : groups) {
+            for (String index : group.indices()) {
+                if (".alerts-*".equals(index)) {
+                    foundAlertsGroup = true;
+                    assertNull("Wildcard resource should produce no DLS query", group.getQuery());
+                }
+            }
+        }
+        assertTrue("Expected to find .alerts-* index group without DLS query", foundAlertsGroup);
+    }
+
+    public void testNoImplicitRoleWithoutContributors() {
+        Collection<ApplicationPrivilegeDescriptor> storedPrivileges = List.of(
+            new ApplicationPrivilegeDescriptor("kibana-.kibana", "feature_alerting_read", Set.of("alerts:read"), Map.of())
+        );
+
+        RoleDescriptor roleDescriptor = new RoleDescriptor(
+            "test_role",
+            null,
+            null,
+            new RoleDescriptor.ApplicationResourcePrivileges[] {
+                RoleDescriptor.ApplicationResourcePrivileges.builder()
+                    .application("kibana-.kibana")
+                    .privileges("feature_alerting_read")
+                    .resources("space:default")
+                    .build() },
+            null,
+            null,
+            null,
+            null
+        );
+
+        final FieldPermissionsCache fieldPermsCache = new FieldPermissionsCache(Settings.EMPTY);
+        final NativePrivilegeStore privilegeStore = mock(NativePrivilegeStore.class);
+        doAnswer((invocationOnMock) -> {
+            @SuppressWarnings("unchecked")
+            ActionListener<Collection<ApplicationPrivilegeDescriptor>> callback = (ActionListener<
+                Collection<ApplicationPrivilegeDescriptor>>) invocationOnMock.getArguments()[3];
+            callback.onResponse(storedPrivileges);
+            return null;
+        }).when(privilegeStore).getPrivileges(isASet(), isASet(), eq(false), anyActionListener());
+
+        final PlainActionFuture<Role> future = new PlainActionFuture<>();
+        CompositeRolesStore.buildRoleFromDescriptors(
+            Set.of(roleDescriptor),
+            fieldPermsCache,
+            privilegeStore,
+            TestRestrictedIndices.RESTRICTED_INDICES,
+            future
+        );
+        Role role = future.actionGet();
+
+        IndicesPermission.Group[] groups = role.indices().groups();
+        for (IndicesPermission.Group group : groups) {
+            for (String index : group.indices()) {
+                assertNotEquals("Should not have .alerts-* group without contributors", ".alerts-*", index);
+            }
+        }
     }
 
     public void testBuildRoleWithFlsAndDlsInRemoteIndicesDefinition() {
@@ -3020,7 +3187,8 @@ public class CompositeRolesStoreTests extends ESTestCase {
             buildBitsetCache(),
             TestRestrictedIndices.RESTRICTED_INDICES,
             EsExecutors.DIRECT_EXECUTOR_SERVICE,
-            rds -> {}
+            rds -> {},
+            List.of()
         );
 
         final Workflow workflow = randomFrom(WorkflowResolver.allWorkflows());
@@ -3137,7 +3305,8 @@ public class CompositeRolesStoreTests extends ESTestCase {
             buildBitsetCache(),
             TestRestrictedIndices.RESTRICTED_INDICES,
             EsExecutors.DIRECT_EXECUTOR_SERVICE,
-            rds -> {}
+            rds -> {},
+            List.of()
         );
 
         final String apiKeyId = randomAlphaOfLength(20);
@@ -3935,7 +4104,8 @@ public class CompositeRolesStoreTests extends ESTestCase {
             documentSubsetBitsetCache,
             TestRestrictedIndices.RESTRICTED_INDICES,
             mockRoleBuildingExecutor,
-            roleConsumer
+            roleConsumer,
+            List.of()
         ) {
             @Override
             public void invalidateAll() {

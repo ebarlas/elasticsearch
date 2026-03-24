@@ -286,7 +286,8 @@ public class IndicesAndAliasesResolverTests extends ESTestCase {
                 new DocumentSubsetBitsetCache(Settings.EMPTY),
                 RESTRICTED_INDICES,
                 EsExecutors.DIRECT_EXECUTOR_SERVICE,
-                rds -> {}
+                rds -> {},
+                List.of()
             )
         );
         userAuthorizedIndices = new String[] {

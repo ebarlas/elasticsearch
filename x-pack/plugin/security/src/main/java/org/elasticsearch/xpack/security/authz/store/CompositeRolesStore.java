@@ -43,9 +43,11 @@ import org.elasticsearch.xpack.core.security.authz.permission.RemoteClusterPermi
 import org.elasticsearch.xpack.core.security.authz.permission.RemoteClusterPermissions;
 import org.elasticsearch.xpack.core.security.authz.permission.Role;
 import org.elasticsearch.xpack.core.security.authz.privilege.ApplicationPrivilege;
+import org.elasticsearch.xpack.core.security.authz.privilege.ApplicationPrivilegeDescriptor;
 import org.elasticsearch.xpack.core.security.authz.privilege.ConfigurableClusterPrivilege;
 import org.elasticsearch.xpack.core.security.authz.privilege.IndexPrivilege;
 import org.elasticsearch.xpack.core.security.authz.privilege.Privilege;
+import org.elasticsearch.xpack.core.security.authz.store.ImplicitRoleDescriptorContributor;
 import org.elasticsearch.xpack.core.security.authz.store.ReservedRolesStore;
 import org.elasticsearch.xpack.core.security.authz.store.RoleKey;
 import org.elasticsearch.xpack.core.security.authz.store.RoleReference;
@@ -122,6 +124,7 @@ public class CompositeRolesStore {
     private final RestrictedIndices restrictedIndices;
     private final ThreadContext threadContext;
     private final Executor roleBuildingExecutor;
+    private final List<ImplicitRoleDescriptorContributor> implicitRoleContributors;
 
     public CompositeRolesStore(
         Settings settings,
@@ -137,7 +140,8 @@ public class CompositeRolesStore {
         DocumentSubsetBitsetCache dlsBitsetCache,
         RestrictedIndices restrictedIndices,
         Executor roleBuildingExecutor,
-        Consumer<Collection<RoleDescriptor>> effectiveRoleDescriptorsConsumer
+        Consumer<Collection<RoleDescriptor>> effectiveRoleDescriptorsConsumer,
+        Collection<ImplicitRoleDescriptorContributor> implicitRoleContributors
     ) {
         new ProjectDeletedListener(this::removeProject).attach(clusterService);
 
@@ -204,6 +208,7 @@ public class CompositeRolesStore {
         this.anonymousUser = new AnonymousUser(settings);
         this.threadContext = threadContext;
         this.roleBuildingExecutor = roleBuildingExecutor;
+        this.implicitRoleContributors = List.copyOf(implicitRoleContributors);
     }
 
     public void getRoles(Authentication authentication, ActionListener<Tuple<Role, Role>> roleActionListener) {
@@ -401,6 +406,7 @@ public class CompositeRolesStore {
             fieldPermissionsCache,
             privilegeStore,
             restrictedIndices,
+            implicitRoleContributors,
             listener.delegateFailureAndWrap((delegate, role) -> {
                 if (role != null && tryCache) {
                     try (ReleasableLock ignored = roleCacheHelper.acquireUpdateLock()) {
@@ -483,6 +489,17 @@ public class CompositeRolesStore {
         FieldPermissionsCache fieldPermissionsCache,
         NativePrivilegeStore privilegeStore,
         RestrictedIndices restrictedIndices,
+        ActionListener<Role> listener
+    ) {
+        buildRoleFromDescriptors(roleDescriptors, fieldPermissionsCache, privilegeStore, restrictedIndices, List.of(), listener);
+    }
+
+    public static void buildRoleFromDescriptors(
+        Collection<RoleDescriptor> roleDescriptors,
+        FieldPermissionsCache fieldPermissionsCache,
+        NativePrivilegeStore privilegeStore,
+        RestrictedIndices restrictedIndices,
+        Collection<ImplicitRoleDescriptorContributor> implicitRoleContributors,
         ActionListener<Role> listener
     ) {
         if (roleDescriptors.isEmpty()) {
@@ -601,6 +618,7 @@ public class CompositeRolesStore {
             builder.workflows(workflows);
         }
         if (applicationPrivilegesMap.isEmpty()) {
+            addImplicitIndicesPrivileges(implicitRoleContributors, roleDescriptors, List.of(), fieldPermissionsCache, builder);
             listener.onResponse(builder.build());
         } else {
             final Set<String> applicationNames = applicationPrivilegesMap.keySet().stream().map(Tuple::v1).collect(Collectors.toSet());
@@ -617,9 +635,33 @@ public class CompositeRolesStore {
                         (key, names) -> ApplicationPrivilege.get(key.v1(), names, appPrivileges)
                             .forEach(priv -> builder.addApplicationPrivilege(priv, key.v2()))
                     );
+                    addImplicitIndicesPrivileges(implicitRoleContributors, roleDescriptors, appPrivileges, fieldPermissionsCache, builder);
                     delegate.onResponse(builder.build());
                 })
             );
+        }
+    }
+
+    private static void addImplicitIndicesPrivileges(
+        Collection<ImplicitRoleDescriptorContributor> contributors,
+        Collection<RoleDescriptor> roleDescriptors,
+        Collection<ApplicationPrivilegeDescriptor> storedPrivileges,
+        FieldPermissionsCache fieldPermissionsCache,
+        Role.Builder builder
+    ) {
+        for (ImplicitRoleDescriptorContributor contributor : contributors) {
+            Collection<IndicesPrivileges> implicitPrivileges = contributor.getImplicitIndicesPrivileges(roleDescriptors, storedPrivileges);
+            for (IndicesPrivileges privilege : implicitPrivileges) {
+                builder.add(
+                    fieldPermissionsCache.getFieldPermissions(
+                        new FieldPermissionsDefinition(privilege.getGrantedFields(), privilege.getDeniedFields())
+                    ),
+                    privilege.getQuery() == null ? null : newHashSet(privilege.getQuery()),
+                    IndexPrivilege.resolveBySelectorAccess(newHashSet(Objects.requireNonNull(privilege.getPrivileges()))),
+                    privilege.allowRestrictedIndices(),
+                    privilege.getIndices()
+                );
+            }
         }
     }
 
