@@ -17,8 +17,11 @@ import org.elasticsearch.test.SecuritySingleNodeTestCase;
 import org.elasticsearch.xcontent.XContentType;
 import org.elasticsearch.xpack.core.security.action.privilege.PutPrivilegesAction;
 import org.elasticsearch.xpack.core.security.action.privilege.PutPrivilegesRequest;
+import org.elasticsearch.xpack.core.security.action.role.GetRolesRequestBuilder;
+import org.elasticsearch.xpack.core.security.action.role.GetRolesResponse;
 import org.elasticsearch.xpack.core.security.action.role.PutRoleRequestBuilder;
 import org.elasticsearch.xpack.core.security.action.user.PutUserRequestBuilder;
+import org.elasticsearch.xpack.core.security.authz.RoleDescriptor;
 import org.elasticsearch.xpack.core.security.authz.privilege.ApplicationPrivilegeDescriptor;
 import org.junit.Before;
 
@@ -637,5 +640,39 @@ public class KibanaAlertsImplicitRolesIT extends SecuritySingleNodeTestCase {
             ElasticsearchSecurityException.class,
             () -> fullStarClient.prepareSearch(ALERTS_INDEX).get()
         );
+    }
+
+    /**
+     * Req 3: The Get Roles HTTP API must NOT return implicit index privileges derived from
+     * application privileges. The role descriptor returned by the API should contain only the
+     * explicitly configured privileges.
+     */
+    public void testReq3_getRolesApiDoesNotExposeImplicitIndexPrivileges() throws Exception {
+        // ALERTS_ROLE has only application privileges — verify the user can actually search
+        Client alertsClient = client().filterWithHeader(
+            Map.of("Authorization", basicAuthHeaderValue(ALERTS_USER, new SecureString(TEST_PASSWORD_SECURE_STRING.getChars())))
+        );
+        SearchResponse searchResp = alertsClient.prepareSearch(ALERTS_INDEX).setSize(1).get();
+        try {
+            assertThat("Implicit access should work", searchResp.getHits().getTotalHits().value(), equalTo(2L));
+        } finally {
+            searchResp.decRef();
+        }
+
+        // Now fetch the role via the Get Roles API and verify no index privileges leak
+        GetRolesResponse rolesResp = new GetRolesRequestBuilder(client()).names(ALERTS_ROLE).get();
+        assertTrue("Role should exist", rolesResp.hasRoles());
+        RoleDescriptor descriptor = rolesResp.roles()[0];
+        assertThat("Role name should match", descriptor.getName(), equalTo(ALERTS_ROLE));
+
+        RoleDescriptor.IndicesPrivileges[] indicesPrivileges = descriptor.getIndicesPrivileges();
+        for (RoleDescriptor.IndicesPrivileges priv : indicesPrivileges) {
+            for (String index : priv.getIndices()) {
+                assertFalse(
+                    "Get Roles API must not expose implicit .alerts-* index privileges, but found: " + index,
+                    index.startsWith(".alerts")
+                );
+            }
+        }
     }
 }
