@@ -254,7 +254,11 @@ public class KibanaAlertsImplicitRolesIT extends SecuritySingleNodeTestCase {
         try {
             assertThat(correctResp.getFailedShards(), equalTo(0));
             Set<String> ids = Arrays.stream(correctResp.getHits().getHits()).map(SearchHit::getId).collect(Collectors.toSet());
-            assertThat("Correct app+action grants DLS-filtered access to space:default", ids, equalTo(Set.of("alert-default-1", "alert-both-1")));
+            assertThat(
+                "Correct app+action grants DLS-filtered access to space:default",
+                ids,
+                equalTo(Set.of("alert-default-1", "alert-both-1"))
+            );
         } finally {
             correctResp.decRef();
         }
@@ -293,10 +297,7 @@ public class KibanaAlertsImplicitRolesIT extends SecuritySingleNodeTestCase {
             .roles("req1a_other_app_role")
             .get();
         Client otherAppClient = client().filterWithHeader(
-            Map.of(
-                "Authorization",
-                basicAuthHeaderValue("req1a_other_app_user", new SecureString(TEST_PASSWORD_SECURE_STRING.getChars()))
-            )
+            Map.of("Authorization", basicAuthHeaderValue("req1a_other_app_user", new SecureString(TEST_PASSWORD_SECURE_STRING.getChars())))
         );
         expectThrows(ElasticsearchSecurityException.class, () -> otherAppClient.prepareSearch(ALERTS_INDEX).get());
     }
@@ -555,17 +556,12 @@ public class KibanaAlertsImplicitRolesIT extends SecuritySingleNodeTestCase {
             .get();
 
         Client spaceStarClient = client().filterWithHeader(
-            Map.of(
-                "Authorization",
-                basicAuthHeaderValue("req1f_space_star_user", new SecureString(TEST_PASSWORD_SECURE_STRING.getChars()))
-            )
+            Map.of("Authorization", basicAuthHeaderValue("req1f_space_star_user", new SecureString(TEST_PASSWORD_SECURE_STRING.getChars())))
         );
         SearchResponse spaceStarResp = spaceStarClient.prepareSearch(ALERTS_INDEX).setSize(10).get();
         try {
             assertThat(spaceStarResp.getFailedShards(), equalTo(0));
-            Set<String> spaceStarIds = Arrays.stream(spaceStarResp.getHits().getHits())
-                .map(SearchHit::getId)
-                .collect(Collectors.toSet());
+            Set<String> spaceStarIds = Arrays.stream(spaceStarResp.getHits().getHits()).map(SearchHit::getId).collect(Collectors.toSet());
             assertThat(
                 "space:* is treated as literal space-id '*', not a wildcard — DLS filters to space_ids containing '*'",
                 spaceStarIds.isEmpty(),
@@ -614,10 +610,7 @@ public class KibanaAlertsImplicitRolesIT extends SecuritySingleNodeTestCase {
                 basicAuthHeaderValue("req1g_alerts_star_user", new SecureString(TEST_PASSWORD_SECURE_STRING.getChars()))
             )
         );
-        expectThrows(
-            ElasticsearchSecurityException.class,
-            () -> alertsStarClient.prepareSearch(ALERTS_INDEX).get()
-        );
+        expectThrows(ElasticsearchSecurityException.class, () -> alertsStarClient.prepareSearch(ALERTS_INDEX).get());
 
         // * action → should NOT match alerts:read
         new PutRoleRequestBuilder(admin).source("req1g_full_star_role", new BytesArray("""
@@ -635,15 +628,9 @@ public class KibanaAlertsImplicitRolesIT extends SecuritySingleNodeTestCase {
             .get();
 
         Client fullStarClient = client().filterWithHeader(
-            Map.of(
-                "Authorization",
-                basicAuthHeaderValue("req1g_full_star_user", new SecureString(TEST_PASSWORD_SECURE_STRING.getChars()))
-            )
+            Map.of("Authorization", basicAuthHeaderValue("req1g_full_star_user", new SecureString(TEST_PASSWORD_SECURE_STRING.getChars())))
         );
-        expectThrows(
-            ElasticsearchSecurityException.class,
-            () -> fullStarClient.prepareSearch(ALERTS_INDEX).get()
-        );
+        expectThrows(ElasticsearchSecurityException.class, () -> fullStarClient.prepareSearch(ALERTS_INDEX).get());
     }
 
     /**
@@ -688,9 +675,7 @@ public class KibanaAlertsImplicitRolesIT extends SecuritySingleNodeTestCase {
         HasPrivilegesRequest hasPrivReq = new HasPrivilegesRequest();
         hasPrivReq.username(ALERTS_USER);
         hasPrivReq.clusterPrivileges(new String[0]);
-        hasPrivReq.indexPrivileges(
-            RoleDescriptor.IndicesPrivileges.builder().indices(ALERTS_INDEX).privileges("read").build()
-        );
+        hasPrivReq.indexPrivileges(RoleDescriptor.IndicesPrivileges.builder().indices(ALERTS_INDEX).privileges("read").build());
         hasPrivReq.applicationPrivileges(new RoleDescriptor.ApplicationResourcePrivileges[0]);
 
         Client alertsClient = client().filterWithHeader(
@@ -705,11 +690,7 @@ public class KibanaAlertsImplicitRolesIT extends SecuritySingleNodeTestCase {
         for (ResourcePrivileges rp : indexPrivs) {
             if (ALERTS_INDEX.equals(rp.getResource())) {
                 foundAlerts = true;
-                assertThat(
-                    "User should have implicit read on " + ALERTS_INDEX,
-                    rp.getPrivileges().get("read"),
-                    equalTo(true)
-                );
+                assertThat("User should have implicit read on " + ALERTS_INDEX, rp.getPrivileges().get("read"), equalTo(true));
             }
         }
         assertTrue("Expected " + ALERTS_INDEX + " in has-privileges index response", foundAlerts);
