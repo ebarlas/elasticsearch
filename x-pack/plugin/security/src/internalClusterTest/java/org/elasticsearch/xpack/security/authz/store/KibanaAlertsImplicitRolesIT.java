@@ -9,12 +9,15 @@ package org.elasticsearch.xpack.security.authz.store;
 
 import org.elasticsearch.ElasticsearchSecurityException;
 import org.elasticsearch.action.search.SearchResponse;
+import org.elasticsearch.action.support.WriteRequest;
 import org.elasticsearch.client.internal.Client;
 import org.elasticsearch.common.bytes.BytesArray;
 import org.elasticsearch.common.settings.SecureString;
 import org.elasticsearch.search.SearchHit;
 import org.elasticsearch.test.SecuritySingleNodeTestCase;
 import org.elasticsearch.xcontent.XContentType;
+import org.elasticsearch.xpack.core.security.action.apikey.CreateApiKeyRequestBuilder;
+import org.elasticsearch.xpack.core.security.action.apikey.CreateApiKeyResponse;
 import org.elasticsearch.xpack.core.security.action.privilege.PutPrivilegesAction;
 import org.elasticsearch.xpack.core.security.action.privilege.PutPrivilegesRequest;
 import org.elasticsearch.xpack.core.security.action.role.GetRolesRequestBuilder;
@@ -29,7 +32,10 @@ import org.elasticsearch.xpack.core.security.authz.permission.ResourcePrivileges
 import org.elasticsearch.xpack.core.security.authz.privilege.ApplicationPrivilegeDescriptor;
 import org.junit.Before;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Base64;
+import java.util.Collections;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -694,5 +700,273 @@ public class KibanaAlertsImplicitRolesIT extends SecuritySingleNodeTestCase {
             }
         }
         assertTrue("Expected " + ALERTS_INDEX + " in has-privileges index response", foundAlerts);
+    }
+
+    /**
+     * Req 6: An ES API key created with no role descriptors (empty) inherits the creator's
+     * full permissions, including implicit {@code .alerts-*} access with DLS filtering.
+     */
+    public void testReq6_apiKeyWithEmptyRoleDescriptorsInheritsImplicitAccess() throws Exception {
+        final Client admin = client();
+
+        new PutRoleRequestBuilder(admin).source("req6_default_role", new BytesArray("""
+            {
+              "cluster": ["manage_own_api_key"],
+              "applications": [{
+                "application": "kibana-.kibana",
+                "privileges": ["feature_alerting_read"],
+                "resources": ["space:default"]
+              }]
+            }
+            """), XContentType.JSON).get();
+
+        new PutUserRequestBuilder(admin).username("req6_default_user")
+            .password(TEST_PASSWORD_SECURE_STRING, getFastStoredHashAlgoForTests())
+            .roles("req6_default_role")
+            .get();
+
+        Client userClient = client().filterWithHeader(
+            Map.of("Authorization", basicAuthHeaderValue("req6_default_user", new SecureString(TEST_PASSWORD_SECURE_STRING.getChars())))
+        );
+
+        CreateApiKeyResponse apiKeyResponse = new CreateApiKeyRequestBuilder(userClient).setName("req6_empty_key")
+            .setRefreshPolicy(WriteRequest.RefreshPolicy.IMMEDIATE)
+            .get();
+
+        Client apiKeyClient = client().filterWithHeader(Map.of("Authorization", "ApiKey " + base64ApiKeyCredentials(apiKeyResponse)));
+
+        SearchResponse response = apiKeyClient.prepareSearch(ALERTS_INDEX).setSize(10).get();
+        try {
+            assertThat(response.getFailedShards(), equalTo(0));
+
+            Set<String> returnedIds = Arrays.stream(response.getHits().getHits()).map(SearchHit::getId).collect(Collectors.toSet());
+
+            assertThat(
+                "API key with empty role descriptors should inherit implicit DLS-filtered access to space:default",
+                returnedIds,
+                equalTo(Set.of("alert-default-1", "alert-both-1"))
+            );
+            assertThat(response.getHits().getTotalHits().value(), equalTo(2L));
+        } finally {
+            response.decRef();
+        }
+    }
+
+    /**
+     * Req 6: An ES API key created with its own role descriptors that include the same
+     * application privileges should also get implicit access. The effective role is the
+     * intersection of the API key's role and the creator's limited-by role — both sides
+     * produce the implicit privilege, so access is granted.
+     */
+    public void testReq6_apiKeyWithMatchingAppPrivilegesHasImplicitAccess() throws Exception {
+        final Client admin = client();
+
+        new PutRoleRequestBuilder(admin).source("req6_app_priv_role", new BytesArray("""
+            {
+              "cluster": ["manage_own_api_key"],
+              "applications": [{
+                "application": "kibana-.kibana",
+                "privileges": ["feature_alerting_read"],
+                "resources": ["space:default"]
+              }]
+            }
+            """), XContentType.JSON).get();
+
+        new PutUserRequestBuilder(admin).username("req6_app_priv_user")
+            .password(TEST_PASSWORD_SECURE_STRING, getFastStoredHashAlgoForTests())
+            .roles("req6_app_priv_role")
+            .get();
+
+        Client userClient = client().filterWithHeader(
+            Map.of("Authorization", basicAuthHeaderValue("req6_app_priv_user", new SecureString(TEST_PASSWORD_SECURE_STRING.getChars())))
+        );
+
+        RoleDescriptor apiKeyRole = new RoleDescriptor(
+            "api_key_role",
+            null,
+            null,
+            new RoleDescriptor.ApplicationResourcePrivileges[] {
+                RoleDescriptor.ApplicationResourcePrivileges.builder()
+                    .application("kibana-.kibana")
+                    .privileges("feature_alerting_read")
+                    .resources("space:default")
+                    .build() },
+            null,
+            null,
+            null,
+            null
+        );
+
+        CreateApiKeyResponse apiKeyResponse = new CreateApiKeyRequestBuilder(userClient).setName("req6_app_priv_key")
+            .setRoleDescriptors(Collections.singletonList(apiKeyRole))
+            .setRefreshPolicy(WriteRequest.RefreshPolicy.IMMEDIATE)
+            .get();
+
+        Client apiKeyClient = client().filterWithHeader(Map.of("Authorization", "ApiKey " + base64ApiKeyCredentials(apiKeyResponse)));
+
+        SearchResponse response = apiKeyClient.prepareSearch(ALERTS_INDEX).setSize(10).get();
+        try {
+            assertThat(response.getFailedShards(), equalTo(0));
+
+            Set<String> returnedIds = Arrays.stream(response.getHits().getHits()).map(SearchHit::getId).collect(Collectors.toSet());
+
+            assertThat(
+                "API key with matching app privileges should have implicit DLS-filtered access to space:default",
+                returnedIds,
+                equalTo(Set.of("alert-default-1", "alert-both-1"))
+            );
+        } finally {
+            response.decRef();
+        }
+    }
+
+    /**
+     * Req 6: An ES API key whose own role descriptors do not grant {@code .alerts-*} access
+     * (and do not include the relevant application privileges) should NOT have implicit access,
+     * because the effective role is the intersection and the API key's side has no alerts access.
+     */
+    public void testReq6_apiKeyWithUnrelatedRoleDescriptorsCannotAccessAlerts() throws Exception {
+        final Client admin = client();
+
+        new PutRoleRequestBuilder(admin).source("req6_unrelated_owner_role", new BytesArray("""
+            {
+              "cluster": ["manage_own_api_key"],
+              "applications": [{
+                "application": "kibana-.kibana",
+                "privileges": ["feature_alerting_read"],
+                "resources": ["space:default"]
+              }]
+            }
+            """), XContentType.JSON).get();
+
+        new PutUserRequestBuilder(admin).username("req6_unrelated_user")
+            .password(TEST_PASSWORD_SECURE_STRING, getFastStoredHashAlgoForTests())
+            .roles("req6_unrelated_owner_role")
+            .get();
+
+        Client userClient = client().filterWithHeader(
+            Map.of("Authorization", basicAuthHeaderValue("req6_unrelated_user", new SecureString(TEST_PASSWORD_SECURE_STRING.getChars())))
+        );
+
+        RoleDescriptor unrelatedRole = new RoleDescriptor(
+            "unrelated_role",
+            new String[] { "monitor" },
+            new RoleDescriptor.IndicesPrivileges[] {
+                RoleDescriptor.IndicesPrivileges.builder().indices("some-other-index").privileges("read").build() },
+            null
+        );
+
+        CreateApiKeyResponse apiKeyResponse = new CreateApiKeyRequestBuilder(userClient).setName("req6_unrelated_key")
+            .setRoleDescriptors(Collections.singletonList(unrelatedRole))
+            .setRefreshPolicy(WriteRequest.RefreshPolicy.IMMEDIATE)
+            .get();
+
+        Client apiKeyClient = client().filterWithHeader(Map.of("Authorization", "ApiKey " + base64ApiKeyCredentials(apiKeyResponse)));
+
+        expectThrows(ElasticsearchSecurityException.class, () -> apiKeyClient.prepareSearch(ALERTS_INDEX).get());
+    }
+
+    /**
+     * Req 6: An API key created by a user with wildcard resource ({@code *}) should inherit
+     * full access to all alerts without DLS filtering.
+     */
+    public void testReq6_apiKeyInheritsWildcardResourceAccess() throws Exception {
+        final Client admin = client();
+
+        new PutRoleRequestBuilder(admin).source("req6_all_spaces_role", new BytesArray("""
+            {
+              "cluster": ["manage_own_api_key"],
+              "applications": [{
+                "application": "kibana-.kibana",
+                "privileges": ["feature_alerting_read"],
+                "resources": ["*"]
+              }]
+            }
+            """), XContentType.JSON).get();
+
+        new PutUserRequestBuilder(admin).username("req6_all_spaces_user")
+            .password(TEST_PASSWORD_SECURE_STRING, getFastStoredHashAlgoForTests())
+            .roles("req6_all_spaces_role")
+            .get();
+
+        Client allSpacesClient = client().filterWithHeader(
+            Map.of("Authorization", basicAuthHeaderValue("req6_all_spaces_user", new SecureString(TEST_PASSWORD_SECURE_STRING.getChars())))
+        );
+
+        CreateApiKeyResponse apiKeyResponse = new CreateApiKeyRequestBuilder(allSpacesClient).setName("req6_wildcard_key")
+            .setRefreshPolicy(WriteRequest.RefreshPolicy.IMMEDIATE)
+            .get();
+
+        Client apiKeyClient = client().filterWithHeader(Map.of("Authorization", "ApiKey " + base64ApiKeyCredentials(apiKeyResponse)));
+
+        SearchResponse response = apiKeyClient.prepareSearch(ALERTS_INDEX).setSize(10).get();
+        try {
+            assertThat(response.getFailedShards(), equalTo(0));
+
+            Set<String> returnedIds = Arrays.stream(response.getHits().getHits()).map(SearchHit::getId).collect(Collectors.toSet());
+
+            assertThat(
+                "API key from wildcard-resource user should see all alerts",
+                returnedIds,
+                equalTo(Set.of("alert-default-1", "alert-marketing-1", "alert-both-1", "alert-sales-1"))
+            );
+        } finally {
+            response.decRef();
+        }
+    }
+
+    /**
+     * Req 6: An API key created by a user with multiple spaces should inherit implicit access
+     * that is DLS-filtered to the union of all granted spaces.
+     */
+    public void testReq6_apiKeyInheritsMultiSpaceDlsFiltering() throws Exception {
+        final Client admin = client();
+
+        new PutRoleRequestBuilder(admin).source("req6_multi_space_role", new BytesArray("""
+            {
+              "cluster": ["manage_own_api_key"],
+              "applications": [
+                {
+                  "application": "kibana-.kibana",
+                  "privileges": ["feature_alerting_read"],
+                  "resources": ["space:default", "space:marketing"]
+                }
+              ]
+            }
+            """), XContentType.JSON).get();
+
+        new PutUserRequestBuilder(admin).username("req6_multi_space_user")
+            .password(TEST_PASSWORD_SECURE_STRING, getFastStoredHashAlgoForTests())
+            .roles("req6_multi_space_role")
+            .get();
+
+        Client multiSpaceClient = client().filterWithHeader(
+            Map.of("Authorization", basicAuthHeaderValue("req6_multi_space_user", new SecureString(TEST_PASSWORD_SECURE_STRING.getChars())))
+        );
+
+        CreateApiKeyResponse apiKeyResponse = new CreateApiKeyRequestBuilder(multiSpaceClient).setName("req6_multi_space_key")
+            .setRefreshPolicy(WriteRequest.RefreshPolicy.IMMEDIATE)
+            .get();
+
+        Client apiKeyClient = client().filterWithHeader(Map.of("Authorization", "ApiKey " + base64ApiKeyCredentials(apiKeyResponse)));
+
+        SearchResponse response = apiKeyClient.prepareSearch(ALERTS_INDEX).setSize(10).get();
+        try {
+            assertThat(response.getFailedShards(), equalTo(0));
+
+            Set<String> returnedIds = Arrays.stream(response.getHits().getHits()).map(SearchHit::getId).collect(Collectors.toSet());
+
+            assertThat(
+                "API key should inherit DLS filtering for default+marketing spaces",
+                returnedIds,
+                equalTo(Set.of("alert-default-1", "alert-marketing-1", "alert-both-1"))
+            );
+        } finally {
+            response.decRef();
+        }
+    }
+
+    private static String base64ApiKeyCredentials(CreateApiKeyResponse response) {
+        return Base64.getEncoder().encodeToString((response.getId() + ":" + response.getKey()).getBytes(StandardCharsets.UTF_8));
     }
 }
