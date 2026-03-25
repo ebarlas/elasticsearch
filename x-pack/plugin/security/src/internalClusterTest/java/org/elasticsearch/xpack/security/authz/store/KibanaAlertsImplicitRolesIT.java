@@ -12,6 +12,7 @@ import org.elasticsearch.action.search.SearchResponse;
 import org.elasticsearch.action.support.WriteRequest;
 import org.elasticsearch.client.internal.Client;
 import org.elasticsearch.common.bytes.BytesArray;
+import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.settings.SecureString;
 import org.elasticsearch.search.SearchHit;
 import org.elasticsearch.test.SecuritySingleNodeTestCase;
@@ -23,6 +24,8 @@ import org.elasticsearch.xpack.core.security.action.privilege.PutPrivilegesReque
 import org.elasticsearch.xpack.core.security.action.role.GetRolesRequestBuilder;
 import org.elasticsearch.xpack.core.security.action.role.GetRolesResponse;
 import org.elasticsearch.xpack.core.security.action.role.PutRoleRequestBuilder;
+import org.elasticsearch.xpack.core.security.action.user.GetUserPrivilegesRequestBuilder;
+import org.elasticsearch.xpack.core.security.action.user.GetUserPrivilegesResponse;
 import org.elasticsearch.xpack.core.security.action.user.HasPrivilegesAction;
 import org.elasticsearch.xpack.core.security.action.user.HasPrivilegesRequest;
 import org.elasticsearch.xpack.core.security.action.user.HasPrivilegesResponse;
@@ -963,6 +966,111 @@ public class KibanaAlertsImplicitRolesIT extends SecuritySingleNodeTestCase {
             );
         } finally {
             response.decRef();
+        }
+    }
+
+    /**
+     * Req 8: The Get User Privileges API should return the implicit {@code .alerts-*} index
+     * privileges with the DLS query derived from the user's application privileges.
+     */
+    public void testReq8_getUserPrivilegesReturnsImplicitAlertsIndexPrivilege() throws Exception {
+        Client alertsClient = client().filterWithHeader(
+            Map.of("Authorization", basicAuthHeaderValue(ALERTS_USER, new SecureString(TEST_PASSWORD_SECURE_STRING.getChars())))
+        );
+
+        GetUserPrivilegesResponse response = new GetUserPrivilegesRequestBuilder(alertsClient).username(ALERTS_USER).get();
+
+        boolean foundAlertsIndex = false;
+        for (GetUserPrivilegesResponse.Indices indexPriv : response.getIndexPrivileges()) {
+            if (indexPriv.getIndices().contains(".alerts-*")) {
+                foundAlertsIndex = true;
+                assertThat("Implicit .alerts-* privilege should grant read", indexPriv.getPrivileges().contains("read"), equalTo(true));
+                assertThat("Implicit .alerts-* privilege should have a DLS query", indexPriv.getQueries().isEmpty(), equalTo(false));
+
+                boolean queryContainsDefault = false;
+                for (BytesReference query : indexPriv.getQueries()) {
+                    String queryStr = query.utf8ToString();
+                    if (queryStr.contains("default")) {
+                        queryContainsDefault = true;
+                    }
+                }
+                assertTrue("DLS query should filter on space:default", queryContainsDefault);
+            }
+        }
+        assertTrue("Get User Privileges should include implicit .alerts-* index privilege", foundAlertsIndex);
+    }
+
+    /**
+     * Req 8: When the user has wildcard resource ({@code *}), the Get User Privileges API should
+     * return the implicit {@code .alerts-*} index privilege with no DLS query.
+     */
+    public void testReq8_getUserPrivilegesWithWildcardResourceHasNoDlsQuery() throws Exception {
+        final Client admin = client();
+
+        new PutRoleRequestBuilder(admin).source("req8_all_spaces_role", new BytesArray("""
+            {
+              "applications": [{
+                "application": "kibana-.kibana",
+                "privileges": ["feature_alerting_read"],
+                "resources": ["*"]
+              }]
+            }
+            """), XContentType.JSON).get();
+
+        new PutUserRequestBuilder(admin).username("req8_all_spaces_user")
+            .password(TEST_PASSWORD_SECURE_STRING, getFastStoredHashAlgoForTests())
+            .roles("req8_all_spaces_role")
+            .get();
+
+        Client allSpacesClient = client().filterWithHeader(
+            Map.of("Authorization", basicAuthHeaderValue("req8_all_spaces_user", new SecureString(TEST_PASSWORD_SECURE_STRING.getChars())))
+        );
+
+        GetUserPrivilegesResponse response = new GetUserPrivilegesRequestBuilder(allSpacesClient).username("req8_all_spaces_user").get();
+
+        boolean foundAlertsIndex = false;
+        for (GetUserPrivilegesResponse.Indices indexPriv : response.getIndexPrivileges()) {
+            if (indexPriv.getIndices().contains(".alerts-*")) {
+                foundAlertsIndex = true;
+                assertThat("Implicit .alerts-* privilege should grant read", indexPriv.getPrivileges().contains("read"), equalTo(true));
+                assertThat("Wildcard resource should produce no DLS query", indexPriv.getQueries().isEmpty(), equalTo(true));
+            }
+        }
+        assertTrue("Get User Privileges should include implicit .alerts-* index privilege", foundAlertsIndex);
+    }
+
+    /**
+     * Req 8: When the user has no application privileges that trigger implicit access, the
+     * Get User Privileges API should NOT include any {@code .alerts-*} index privilege.
+     */
+    public void testReq8_getUserPrivilegesWithoutAlertsPrivilegeExcludesAlertsIndex() throws Exception {
+        final Client admin = client();
+
+        new PutRoleRequestBuilder(admin).source("req8_no_alerts_role", new BytesArray("""
+            {
+              "cluster": [],
+              "indices": []
+            }
+            """), XContentType.JSON).get();
+
+        new PutUserRequestBuilder(admin).username("req8_no_alerts_user")
+            .password(TEST_PASSWORD_SECURE_STRING, getFastStoredHashAlgoForTests())
+            .roles("req8_no_alerts_role")
+            .get();
+
+        Client noAlertsClient = client().filterWithHeader(
+            Map.of("Authorization", basicAuthHeaderValue("req8_no_alerts_user", new SecureString(TEST_PASSWORD_SECURE_STRING.getChars())))
+        );
+
+        GetUserPrivilegesResponse response = new GetUserPrivilegesRequestBuilder(noAlertsClient).username("req8_no_alerts_user").get();
+
+        for (GetUserPrivilegesResponse.Indices indexPriv : response.getIndexPrivileges()) {
+            for (String index : indexPriv.getIndices()) {
+                assertFalse(
+                    "User without alerts privilege should not have .alerts-* in user privileges, but found: " + index,
+                    index.startsWith(".alerts")
+                );
+            }
         }
     }
 
