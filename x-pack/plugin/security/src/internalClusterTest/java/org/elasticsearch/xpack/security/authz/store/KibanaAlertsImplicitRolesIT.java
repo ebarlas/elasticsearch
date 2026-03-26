@@ -1145,6 +1145,36 @@ public class KibanaAlertsImplicitRolesIT extends SecuritySingleNodeTestCase {
     }
 
     /**
+     * Verifies that the role cache is invalidated when stored application privilege definitions
+     * change. The user starts with implicit {@code .alerts-*} access (because the stored privilege
+     * includes the {@code alerts:read} action), then the privilege is updated to remove that
+     * action, and the user is denied access on the next request.
+     */
+    public void testImplicitAccessRevokedWhenAppPrivilegeDefinitionChanges() throws Exception {
+        Client alertsClient = client().filterWithHeader(
+            Map.of("Authorization", basicAuthHeaderValue(ALERTS_USER, new SecureString(TEST_PASSWORD_SECURE_STRING.getChars())))
+        );
+
+        SearchResponse before = alertsClient.prepareSearch(ALERTS_INDEX).setSize(10).get();
+        try {
+            assertThat(before.getFailedShards(), equalTo(0));
+            assertThat("User should have implicit access before privilege change", before.getHits().getTotalHits().value(), equalTo(2L));
+        } finally {
+            before.decRef();
+        }
+
+        final PutPrivilegesRequest updateReq = new PutPrivilegesRequest();
+        updateReq.setPrivileges(
+            java.util.List.of(
+                new ApplicationPrivilegeDescriptor("kibana-.kibana", "feature_alerting_read", Set.of("alerts:write"), emptyMap())
+            )
+        );
+        client().execute(PutPrivilegesAction.INSTANCE, updateReq).actionGet();
+
+        expectThrows(ElasticsearchSecurityException.class, () -> alertsClient.prepareSearch(ALERTS_INDEX).get());
+    }
+
+    /**
      * Req 8: The Get User Privileges API should return the implicit {@code .alerts-*} index
      * privileges with the DLS query derived from the user's application privileges.
      */
