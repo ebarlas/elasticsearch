@@ -706,6 +706,181 @@ public class KibanaAlertsImplicitRolesIT extends SecuritySingleNodeTestCase {
     }
 
     /**
+     * Req 4: The Has Privileges API must report that implicit read access does NOT extend to
+     * write privileges. The implicit grant is read-only.
+     */
+    public void testReq4_hasPrivilegesReportsWriteNotGranted() throws Exception {
+        Client alertsClient = client().filterWithHeader(
+            Map.of("Authorization", basicAuthHeaderValue(ALERTS_USER, new SecureString(TEST_PASSWORD_SECURE_STRING.getChars())))
+        );
+
+        HasPrivilegesRequest request = new HasPrivilegesRequest();
+        request.username(ALERTS_USER);
+        request.clusterPrivileges(new String[0]);
+        request.indexPrivileges(RoleDescriptor.IndicesPrivileges.builder().indices(ALERTS_INDEX).privileges("write").build());
+        request.applicationPrivileges(new RoleDescriptor.ApplicationResourcePrivileges[0]);
+
+        HasPrivilegesResponse response = alertsClient.execute(HasPrivilegesAction.INSTANCE, request).actionGet();
+
+        assertThat("Write is not implicitly granted, so complete match should be false", response.isCompleteMatch(), equalTo(false));
+
+        for (ResourcePrivileges rp : response.getIndexPrivileges()) {
+            if (ALERTS_INDEX.equals(rp.getResource())) {
+                assertThat("Implicit grant is read-only, write should be denied", rp.getPrivileges().get("write"), equalTo(false));
+            }
+        }
+    }
+
+    /**
+     * Req 4: The Has Privileges API must report false for a user who has no application
+     * privileges that trigger implicit access.
+     */
+    public void testReq4_hasPrivilegesReportsFalseWithoutImplicitAccess() throws Exception {
+        final Client admin = client();
+
+        new PutRoleRequestBuilder(admin).source("req4_no_alerts_role", new BytesArray("""
+            {
+              "cluster": [],
+              "indices": []
+            }
+            """), XContentType.JSON).get();
+
+        new PutUserRequestBuilder(admin).username("req4_no_alerts_user")
+            .password(TEST_PASSWORD_SECURE_STRING, getFastStoredHashAlgoForTests())
+            .roles("req4_no_alerts_role")
+            .get();
+
+        Client noAlertsClient = client().filterWithHeader(
+            Map.of("Authorization", basicAuthHeaderValue("req4_no_alerts_user", new SecureString(TEST_PASSWORD_SECURE_STRING.getChars())))
+        );
+
+        HasPrivilegesRequest request = new HasPrivilegesRequest();
+        request.username("req4_no_alerts_user");
+        request.clusterPrivileges(new String[0]);
+        request.indexPrivileges(RoleDescriptor.IndicesPrivileges.builder().indices(ALERTS_INDEX).privileges("read").build());
+        request.applicationPrivileges(new RoleDescriptor.ApplicationResourcePrivileges[0]);
+
+        HasPrivilegesResponse response = noAlertsClient.execute(HasPrivilegesAction.INSTANCE, request).actionGet();
+
+        assertThat("User without alerts privilege should not have complete match", response.isCompleteMatch(), equalTo(false));
+
+        for (ResourcePrivileges rp : response.getIndexPrivileges()) {
+            if (ALERTS_INDEX.equals(rp.getResource())) {
+                assertThat("User without alerts privilege should not have read on " + ALERTS_INDEX, rp.getPrivileges().get("read"), equalTo(false));
+            }
+        }
+    }
+
+    /**
+     * Req 4: The Has Privileges API must report read access for a user with wildcard resource,
+     * and simultaneously report that an unrelated index is not accessible.
+     */
+    public void testReq4_hasPrivilegesWithWildcardResourceAndMixedIndices() throws Exception {
+        final Client admin = client();
+
+        new PutRoleRequestBuilder(admin).source("req4_wildcard_role", new BytesArray("""
+            {
+              "applications": [{
+                "application": "kibana-.kibana",
+                "privileges": ["feature_alerting_read"],
+                "resources": ["*"]
+              }]
+            }
+            """), XContentType.JSON).get();
+
+        new PutUserRequestBuilder(admin).username("req4_wildcard_user")
+            .password(TEST_PASSWORD_SECURE_STRING, getFastStoredHashAlgoForTests())
+            .roles("req4_wildcard_role")
+            .get();
+
+        Client wildcardClient = client().filterWithHeader(
+            Map.of("Authorization", basicAuthHeaderValue("req4_wildcard_user", new SecureString(TEST_PASSWORD_SECURE_STRING.getChars())))
+        );
+
+        HasPrivilegesRequest request = new HasPrivilegesRequest();
+        request.username("req4_wildcard_user");
+        request.clusterPrivileges(new String[0]);
+        request.indexPrivileges(
+            RoleDescriptor.IndicesPrivileges.builder().indices(ALERTS_INDEX).privileges("read").build(),
+            RoleDescriptor.IndicesPrivileges.builder().indices("unrelated-index").privileges("read").build()
+        );
+        request.applicationPrivileges(new RoleDescriptor.ApplicationResourcePrivileges[0]);
+
+        HasPrivilegesResponse response = wildcardClient.execute(HasPrivilegesAction.INSTANCE, request).actionGet();
+
+        assertThat("Unrelated index is not granted, so complete match should be false", response.isCompleteMatch(), equalTo(false));
+
+        boolean foundAlerts = false;
+        boolean foundUnrelated = false;
+        for (ResourcePrivileges rp : response.getIndexPrivileges()) {
+            if (ALERTS_INDEX.equals(rp.getResource())) {
+                foundAlerts = true;
+                assertThat("Wildcard resource user should have implicit read on " + ALERTS_INDEX, rp.getPrivileges().get("read"), equalTo(true));
+            }
+            if ("unrelated-index".equals(rp.getResource())) {
+                foundUnrelated = true;
+                assertThat("User should NOT have read on unrelated-index", rp.getPrivileges().get("read"), equalTo(false));
+            }
+        }
+        assertTrue("Expected " + ALERTS_INDEX + " in has-privileges response", foundAlerts);
+        assertTrue("Expected unrelated-index in has-privileges response", foundUnrelated);
+    }
+
+    /**
+     * Req 4 + Req 6: The Has Privileges API must reflect implicit read access when
+     * authenticated via an API key that inherits the creator's application privileges.
+     */
+    public void testReq4_hasPrivilegesViaApiKeyReflectsImplicitAccess() throws Exception {
+        final Client admin = client();
+
+        new PutRoleRequestBuilder(admin).source("req4_apikey_role", new BytesArray("""
+            {
+              "cluster": ["manage_own_api_key"],
+              "applications": [{
+                "application": "kibana-.kibana",
+                "privileges": ["feature_alerting_read"],
+                "resources": ["space:default"]
+              }]
+            }
+            """), XContentType.JSON).get();
+
+        new PutUserRequestBuilder(admin).username("req4_apikey_user")
+            .password(TEST_PASSWORD_SECURE_STRING, getFastStoredHashAlgoForTests())
+            .roles("req4_apikey_role")
+            .get();
+
+        Client userClient = client().filterWithHeader(
+            Map.of("Authorization", basicAuthHeaderValue("req4_apikey_user", new SecureString(TEST_PASSWORD_SECURE_STRING.getChars())))
+        );
+
+        CreateApiKeyResponse apiKeyResponse = new CreateApiKeyRequestBuilder(userClient).setName("req4_has_priv_key")
+            .setRefreshPolicy(WriteRequest.RefreshPolicy.IMMEDIATE)
+            .get();
+
+        Client apiKeyClient = client().filterWithHeader(Map.of("Authorization", "ApiKey " + base64ApiKeyCredentials(apiKeyResponse)));
+
+        HasPrivilegesRequest request = new HasPrivilegesRequest();
+        request.username("req4_apikey_user");
+        request.clusterPrivileges(new String[0]);
+        request.indexPrivileges(
+            RoleDescriptor.IndicesPrivileges.builder().indices(ALERTS_INDEX).privileges("read").build(),
+            RoleDescriptor.IndicesPrivileges.builder().indices(ALERTS_INDEX).privileges("write").build()
+        );
+        request.applicationPrivileges(new RoleDescriptor.ApplicationResourcePrivileges[0]);
+
+        HasPrivilegesResponse response = apiKeyClient.execute(HasPrivilegesAction.INSTANCE, request).actionGet();
+
+        assertThat("Write is not granted, so complete match should be false", response.isCompleteMatch(), equalTo(false));
+
+        for (ResourcePrivileges rp : response.getIndexPrivileges()) {
+            if (ALERTS_INDEX.equals(rp.getResource())) {
+                assertThat("API key should have implicit read on " + ALERTS_INDEX, rp.getPrivileges().get("read"), equalTo(true));
+                assertThat("API key should NOT have implicit write on " + ALERTS_INDEX, rp.getPrivileges().get("write"), equalTo(false));
+            }
+        }
+    }
+
+    /**
      * Req 6: An ES API key created with no role descriptors (empty) inherits the creator's
      * full permissions, including implicit {@code .alerts-*} access with DLS filtering.
      */
