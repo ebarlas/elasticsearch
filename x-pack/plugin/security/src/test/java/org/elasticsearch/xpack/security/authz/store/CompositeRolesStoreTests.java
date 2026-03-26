@@ -103,7 +103,7 @@ import org.elasticsearch.xpack.core.security.authz.privilege.IndexPrivilegeTests
 import org.elasticsearch.xpack.core.security.authz.privilege.NamedClusterPrivilege;
 import org.elasticsearch.xpack.core.security.authz.restriction.Workflow;
 import org.elasticsearch.xpack.core.security.authz.restriction.WorkflowResolver;
-import org.elasticsearch.xpack.core.security.authz.store.KibanaAlertsImplicitRoles;
+import org.elasticsearch.xpack.kibanasecurity.KibanaAlertsImplicitRoles;
 import org.elasticsearch.xpack.core.security.authz.store.ReservedRolesStore;
 import org.elasticsearch.xpack.core.security.authz.store.RoleReference;
 import org.elasticsearch.xpack.core.security.authz.store.RoleReferenceIntersection;

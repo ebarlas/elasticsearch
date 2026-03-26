@@ -22,6 +22,7 @@ dependencies {
   api project(path: ':modules:transport-netty4')
 
   testImplementation project(path: xpackModule('ilm'))
+  testImplementation project(path: xpackModule('kibana-security'))
   testImplementation project(path: xpackModule('downsample'))
   testImplementation project(path: xpackModule('mapper-aggregate-metric'))
   testImplementation project(path: xpackModule('monitoring'))

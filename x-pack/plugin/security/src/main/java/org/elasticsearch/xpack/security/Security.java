@@ -220,7 +220,7 @@ import org.elasticsearch.xpack.core.security.authz.accesscontrol.SecurityIndexRe
 import org.elasticsearch.xpack.core.security.authz.permission.FieldPermissions;
 import org.elasticsearch.xpack.core.security.authz.permission.FieldPermissionsCache;
 import org.elasticsearch.xpack.core.security.authz.permission.SimpleRole;
-import org.elasticsearch.xpack.core.security.authz.store.KibanaAlertsImplicitRoles;
+import org.elasticsearch.xpack.core.security.authz.store.ImplicitRoleDescriptorContributor;
 import org.elasticsearch.xpack.core.security.authz.store.ReservedRolesStore;
 import org.elasticsearch.xpack.core.security.authz.store.RoleRetrievalResult;
 import org.elasticsearch.xpack.core.security.support.Automatons;
@@ -621,6 +621,7 @@ public class Security extends Plugin
     private final SetOnce<DocumentSubsetBitsetCache> dlsBitsetCache = new SetOnce<>();
     private final SetOnce<List<BootstrapCheck>> bootstrapChecks = new SetOnce<>();
     private final List<SecurityExtension> securityExtensions = new ArrayList<>();
+    private final List<ImplicitRoleDescriptorContributor> implicitRoleContributors = new ArrayList<>();
     private final SetOnce<Transport> transportReference = new SetOnce<>();
     private final SetOnce<ScriptService> scriptServiceReference = new SetOnce<>();
     private final SetOnce<OperatorOnlyRegistry> operatorOnlyRegistry = new SetOnce<>();
@@ -653,10 +654,18 @@ public class Security extends Plugin
     private final SetOnce<List<Closeable>> closableComponents = new SetOnce<>();
 
     public Security(Settings settings) {
-        this(settings, Collections.emptyList());
+        this(settings, Collections.emptyList(), Collections.emptyList());
     }
 
     Security(Settings settings, List<SecurityExtension> extensions) {
+        this(settings, extensions, Collections.emptyList());
+    }
+
+    Security(
+        Settings settings,
+        List<SecurityExtension> extensions,
+        List<ImplicitRoleDescriptorContributor> implicitRoleContributors
+    ) {
         // Note: The settings that are passed in here might not be the final values - things like Plugin.additionalSettings()
         // will be called after the plugins are constructed, and may introduce new setting values.
         // Accordingly we should avoid using this settings object for very much and mostly rely on Environment.setting() as provided
@@ -674,6 +683,7 @@ public class Security extends Plugin
             this.bootstrapChecks.set(Collections.emptyList());
         }
         this.securityExtensions.addAll(extensions);
+        this.implicitRoleContributors.addAll(implicitRoleContributors);
     }
 
     private void ensureNoRemoteClusterCredentialsOnDisabledSecurity(Settings settings) {
@@ -1058,7 +1068,7 @@ public class Security extends Plugin
             restrictedIndices,
             buildRoleBuildingExecutor(threadPool, settings),
             new DeprecationRoleDescriptorConsumer(clusterService, projectResolver, threadPool),
-            List.of(new KibanaAlertsImplicitRoles())
+            implicitRoleContributors
         );
         systemIndices.getMainIndexManager().addStateListener(allRolesStore::onSecurityIndexStateChange);
 
@@ -2566,6 +2576,7 @@ public class Security extends Plugin
     @Override
     public void loadExtensions(ExtensionLoader loader) {
         securityExtensions.addAll(loader.loadExtensions(SecurityExtension.class));
+        implicitRoleContributors.addAll(loader.loadExtensions(ImplicitRoleDescriptorContributor.class));
         loadSingletonExtensionAndSetOnce(loader, operatorOnlyRegistry, OperatorOnlyRegistry.class);
         loadSingletonExtensionAndSetOnce(loader, putRoleRequestBuilderFactory, PutRoleRequestBuilderFactory.class);
         loadSingletonExtensionAndSetOnce(loader, bulkPutRoleRequestBuilderFactory, BulkPutRoleRequestBuilderFactory.class);

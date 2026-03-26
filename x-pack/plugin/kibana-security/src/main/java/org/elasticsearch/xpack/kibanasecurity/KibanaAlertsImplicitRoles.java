@@ -5,13 +5,14 @@
  * 2.0.
  */
 
-package org.elasticsearch.xpack.core.security.authz.store;
+package org.elasticsearch.xpack.kibanasecurity;
 
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.xcontent.XContentBuilder;
 import org.elasticsearch.xcontent.json.JsonXContent;
 import org.elasticsearch.xpack.core.security.authz.RoleDescriptor;
 import org.elasticsearch.xpack.core.security.authz.privilege.ApplicationPrivilegeDescriptor;
+import org.elasticsearch.xpack.core.security.authz.store.ImplicitRoleDescriptorContributor;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;

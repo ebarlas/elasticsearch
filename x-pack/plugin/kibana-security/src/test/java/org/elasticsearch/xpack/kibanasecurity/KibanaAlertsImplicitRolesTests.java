@@ -5,7 +5,7 @@
  * 2.0.
  */
 
-package org.elasticsearch.xpack.core.security.authz.store;
+package org.elasticsearch.xpack.kibanasecurity;
 
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.xpack.core.security.authz.RoleDescriptor;

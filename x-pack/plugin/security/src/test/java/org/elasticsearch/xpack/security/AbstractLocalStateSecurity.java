@@ -12,7 +12,9 @@ import org.elasticsearch.license.XPackLicenseState;
 import org.elasticsearch.plugins.ReloadablePlugin;
 import org.elasticsearch.xpack.core.LocalStateCompositeXPackPlugin;
 import org.elasticsearch.xpack.core.security.SecurityExtension;
+import org.elasticsearch.xpack.core.security.authz.store.ImplicitRoleDescriptorContributor;
 import org.elasticsearch.xpack.core.ssl.SSLService;
+import org.elasticsearch.xpack.kibanasecurity.KibanaAlertsImplicitRoles;
 
 import java.nio.file.Path;
 import java.util.List;
@@ -22,17 +24,23 @@ public abstract class AbstractLocalStateSecurity extends LocalStateCompositeXPac
     public AbstractLocalStateSecurity(Settings settings, Path configPath) {
         super(settings, configPath);
 
-        plugins.add(new Security(settings, AbstractLocalStateSecurity.this.securityExtensions()) {
-            @Override
-            protected SSLService getSslService() {
-                return AbstractLocalStateSecurity.this.getSslService();
-            }
+        plugins.add(
+            new Security(
+                settings,
+                AbstractLocalStateSecurity.this.securityExtensions(),
+                AbstractLocalStateSecurity.this.implicitRoleContributors()
+            ) {
+                @Override
+                protected SSLService getSslService() {
+                    return AbstractLocalStateSecurity.this.getSslService();
+                }
 
-            @Override
-            protected XPackLicenseState getLicenseState() {
-                return AbstractLocalStateSecurity.this.getLicenseState();
+                @Override
+                protected XPackLicenseState getLicenseState() {
+                    return AbstractLocalStateSecurity.this.getLicenseState();
+                }
             }
-        });
+        );
     }
 
     @Override
@@ -48,5 +56,9 @@ public abstract class AbstractLocalStateSecurity extends LocalStateCompositeXPac
 
     protected List<SecurityExtension> securityExtensions() {
         return List.of();
+    }
+
+    protected List<ImplicitRoleDescriptorContributor> implicitRoleContributors() {
+        return List.of(new KibanaAlertsImplicitRoles());
     }
 }
