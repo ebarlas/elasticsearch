@@ -1294,6 +1294,82 @@ public class KibanaAlertsImplicitRolesIT extends SecuritySingleNodeTestCase {
         }
     }
 
+    /**
+     * Observes the interaction between implicit and explicit DLS on API keys under a basic license.
+     * <p>
+     * An API key's effective role is the intersection ({@code LimitedRole}) of the API key's own role
+     * and the owner's "limited-by" role. {@code IndicesAccessControl.limitIndexAccessControl} preserves
+     * the DLS license exemption only if <b>both</b> sides are exempt:
+     * <pre>{@code exempt = this.dlsFlsLicenseExempt && other.dlsFlsLicenseExempt}</pre>
+     * <p>
+     * When the API key's role has <b>explicit</b> DLS (not exempt) on {@code .alerts-*} and the owner's
+     * role has <b>implicit</b> DLS (exempt) from application privileges, the AND yields {@code false}.
+     * On a basic license the DLS is then blocked by {@code DlsFlsLicenseRequestInterceptor}.
+     */
+    public void testApiKeyWithExplicitDlsLosesLicenseExemptionOnBasicLicense() throws Exception {
+        final Client admin = client();
+
+        // Owner: has manage_own_api_key + implicit alerts access to space:default (license-exempt DLS)
+        new PutRoleRequestBuilder(admin).source("explicit_dls_owner_role", new BytesArray("""
+            {
+              "cluster": ["manage_own_api_key"],
+              "applications": [{
+                "application": "kibana-.kibana",
+                "privileges": ["feature_alerting_read"],
+                "resources": ["space:default"]
+              }]
+            }
+            """), XContentType.JSON).get();
+        new PutUserRequestBuilder(admin).username("explicit_dls_owner")
+            .password(TEST_PASSWORD_SECURE_STRING, getFastStoredHashAlgoForTests())
+            .roles("explicit_dls_owner_role")
+            .get();
+
+        // Sanity check: the owner can search alerts directly (implicit DLS is exempt from license)
+        Client ownerClient = client().filterWithHeader(
+            Map.of("Authorization", basicAuthHeaderValue("explicit_dls_owner", new SecureString(TEST_PASSWORD_SECURE_STRING.getChars())))
+        );
+        SearchResponse ownerResp = ownerClient.prepareSearch(ALERTS_INDEX).setSize(10).get();
+        try {
+            assertThat(ownerResp.getFailedShards(), equalTo(0));
+            assertThat(ownerResp.getHits().getTotalHits().value(), equalTo(2L));
+        } finally {
+            ownerResp.decRef();
+        }
+
+        // API key with explicit DLS on .alerts-* (NOT license-exempt)
+        RoleDescriptor apiKeyRole = new RoleDescriptor(
+            "api_key_explicit_dls",
+            null,
+            new RoleDescriptor.IndicesPrivileges[] {
+                RoleDescriptor.IndicesPrivileges.builder()
+                    .indices(".alerts-*")
+                    .privileges("read")
+                    .query("{\"terms\": {\"kibana.space_ids\": [\"default\"]}}")
+                    .build() },
+            null
+        );
+
+        CreateApiKeyResponse apiKeyResponse = new CreateApiKeyRequestBuilder(ownerClient).setName("explicit_dls_key")
+            .setRoleDescriptors(Collections.singletonList(apiKeyRole))
+            .setRefreshPolicy(WriteRequest.RefreshPolicy.IMMEDIATE)
+            .get();
+
+        Client apiKeyClient = client().filterWithHeader(Map.of("Authorization", "ApiKey " + base64ApiKeyCredentials(apiKeyResponse)));
+
+        // The intersection of explicit DLS (not exempt) AND implicit DLS (exempt) loses the exemption.
+        // On basic license, the license interceptor blocks the request.
+        ElasticsearchSecurityException ex = expectThrows(
+            ElasticsearchSecurityException.class,
+            () -> apiKeyClient.prepareSearch(ALERTS_INDEX).get()
+        );
+        assertThat(
+            "Expected a license compliance error, not an authorization denial",
+            ex.getMessage(),
+            org.hamcrest.Matchers.containsString("non-compliant")
+        );
+    }
+
     private static String base64ApiKeyCredentials(CreateApiKeyResponse response) {
         return Base64.getEncoder().encodeToString((response.getId() + ":" + response.getKey()).getBytes(StandardCharsets.UTF_8));
     }
