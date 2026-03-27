@@ -652,7 +652,7 @@ public class CompositeRolesStore {
         for (ImplicitRoleDescriptorContributor contributor : contributors) {
             Collection<IndicesPrivileges> implicitPrivileges = contributor.getImplicitIndicesPrivileges(roleDescriptors, storedPrivileges);
             for (IndicesPrivileges privilege : implicitPrivileges) {
-                builder.add(
+                builder.addImplicit(
                     fieldPermissionsCache.getFieldPermissions(
                         new FieldPermissionsDefinition(privilege.getGrantedFields(), privilege.getDeniedFields())
                     ),

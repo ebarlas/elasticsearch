@@ -94,6 +94,20 @@ public final class IndicesPermission {
             return this;
         }
 
+        public Builder addGroup(
+            IndexPrivilege privilege,
+            FieldPermissions fieldPermissions,
+            @Nullable Set<BytesReference> query,
+            boolean allowRestrictedIndices,
+            boolean implicitlyGranted,
+            String... indices
+        ) {
+            groups.add(
+                new Group(privilege, fieldPermissions, query, allowRestrictedIndices, implicitlyGranted, restrictedIndices, indices)
+            );
+            return this;
+        }
+
         public IndicesPermission build() {
             return new IndicesPermission(restrictedIndices, groups.toArray(Group.EMPTY_ARRAY));
         }
@@ -638,6 +652,7 @@ public final class IndicesPermission {
         final Map<String, Set<FieldPermissions>> fieldPermissionsByIndex = Maps.newMapWithExpectedSize(totalResourceCount);
         final Map<String, DocumentLevelPermissions> roleQueriesByIndex = Maps.newMapWithExpectedSize(totalResourceCount);
         final Set<String> grantedResources = Sets.newHashSetWithExpectedSize(totalResourceCount);
+        final Set<String> indicesWithExplicitDlsFls = new HashSet<>();
 
         final boolean isMappingUpdateAction = isMappingUpdateAction(action);
 
@@ -658,6 +673,8 @@ public final class IndicesPermission {
                             && false == resource.isPartOfDataStream()
                             && containsPrivilegeThatGrantsMappingUpdatesForBwc(group))) {
                         granted = true;
+                        final boolean groupHasExplicitDlsFls = !group.isImplicitlyGranted()
+                            && (group.hasQuery() || group.getFieldPermissions().hasFieldLevelSecurity());
                         // propagate DLS and FLS permissions over the concrete indices
                         for (String index : concreteIndices) {
                             final Set<FieldPermissions> fieldPermissions = fieldPermissionsByIndex.compute(index, (k, existingSet) -> {
@@ -694,9 +711,16 @@ public final class IndicesPermission {
                                 roleQueriesByIndex.put(index, docPermissions);
                             }
 
+                            if (groupHasExplicitDlsFls) {
+                                indicesWithExplicitDlsFls.add(index);
+                            }
+
                             if (index.equals(resourceName) == false) {
                                 fieldPermissionsByIndex.put(resourceName, fieldPermissions);
                                 roleQueriesByIndex.put(resourceName, docPermissions);
+                                if (groupHasExplicitDlsFls) {
+                                    indicesWithExplicitDlsFls.add(resourceName);
+                                }
                             }
                         }
                     }
@@ -735,7 +759,12 @@ public final class IndicesPermission {
             } else {
                 fieldPermissions = FieldPermissions.DEFAULT;
             }
-            indexPermissions.put(index, new IndicesAccessControl.IndexAccessControl(fieldPermissions, documentPermissions));
+            final boolean dlsFlsLicenseExempt = !indicesWithExplicitDlsFls.contains(index)
+                && (documentPermissions.hasDocumentLevelPermissions() || fieldPermissions.hasFieldLevelSecurity());
+            indexPermissions.put(
+                index,
+                new IndicesAccessControl.IndexAccessControl(fieldPermissions, documentPermissions, dlsFlsLicenseExempt)
+            );
         }
         return unmodifiableMap(indexPermissions);
     }
@@ -963,6 +992,7 @@ public final class IndicesPermission {
         // users. Setting this flag true eliminates the special status for the purpose of this permission - restricted indices still have
         // to be covered by the "indices"
         private final boolean allowRestrictedIndices;
+        private final boolean implicitlyGranted;
 
         public Group(
             IndexPrivilege privilege,
@@ -972,12 +1002,25 @@ public final class IndicesPermission {
             RestrictedIndices restrictedIndices,
             String... indices
         ) {
+            this(privilege, fieldPermissions, query, allowRestrictedIndices, false, restrictedIndices, indices);
+        }
+
+        public Group(
+            IndexPrivilege privilege,
+            FieldPermissions fieldPermissions,
+            @Nullable Set<BytesReference> query,
+            boolean allowRestrictedIndices,
+            boolean implicitlyGranted,
+            RestrictedIndices restrictedIndices,
+            String... indices
+        ) {
             assert indices.length != 0;
             this.privilege = privilege;
             this.actionMatcher = privilege.predicate();
             this.selectorPredicate = privilege.getSelectorPredicate();
             this.indices = indices;
             this.allowRestrictedIndices = allowRestrictedIndices;
+            this.implicitlyGranted = implicitlyGranted;
             if (allowRestrictedIndices) {
                 this.indexNameMatcher = StringMatcher.of(indices);
                 this.indexNameAutomaton = CachedSupplier.wrap(() -> Automatons.patterns(indices));
@@ -1027,6 +1070,10 @@ public final class IndicesPermission {
 
         public boolean allowRestrictedIndices() {
             return allowRestrictedIndices;
+        }
+
+        public boolean isImplicitlyGranted() {
+            return implicitlyGranted;
         }
 
         public Automaton getIndexMatcherAutomaton() {

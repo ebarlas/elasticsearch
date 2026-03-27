@@ -79,9 +79,24 @@ public class IndicesAccessControl {
     }
 
     public DlsFlsUsage getFieldAndDocumentLevelSecurityUsage() {
+        return computeDlsFlsUsage(iac -> false);
+    }
+
+    /**
+     * Like {@link #getFieldAndDocumentLevelSecurityUsage()} but excludes indices whose DLS/FLS is license-exempt
+     * (produced by implicit role contributions such as application-privilege-derived index privileges).
+     */
+    public DlsFlsUsage getLicenseRequiredDlsFlsUsage() {
+        return computeDlsFlsUsage(IndexAccessControl::isDlsFlsLicenseExempt);
+    }
+
+    private DlsFlsUsage computeDlsFlsUsage(Predicate<IndexAccessControl> skip) {
         boolean hasFls = false;
         boolean hasDls = false;
         for (IndexAccessControl iac : this.getAllIndexPermissions().values()) {
+            if (skip.test(iac)) {
+                continue;
+            }
             if (iac.fieldPermissions.hasFieldLevelSecurity()) {
                 hasFls = true;
             }
@@ -169,14 +184,20 @@ public class IndicesAccessControl {
      */
     public static class IndexAccessControl implements CacheKey {
 
-        public static final IndexAccessControl ALLOW_ALL = new IndexAccessControl(null, null);
+        public static final IndexAccessControl ALLOW_ALL = new IndexAccessControl(null, null, true);
 
         private final FieldPermissions fieldPermissions;
         private final DocumentPermissions documentPermissions;
+        private final boolean dlsFlsLicenseExempt;
 
         public IndexAccessControl(FieldPermissions fieldPermissions, DocumentPermissions documentPermissions) {
+            this(fieldPermissions, documentPermissions, false);
+        }
+
+        public IndexAccessControl(FieldPermissions fieldPermissions, DocumentPermissions documentPermissions, boolean dlsFlsLicenseExempt) {
             this.fieldPermissions = (fieldPermissions == null) ? FieldPermissions.DEFAULT : fieldPermissions;
             this.documentPermissions = (documentPermissions == null) ? DocumentPermissions.allowAll() : documentPermissions;
+            this.dlsFlsLicenseExempt = dlsFlsLicenseExempt;
         }
 
         /**
@@ -192,6 +213,14 @@ public class IndicesAccessControl {
          */
         public DocumentPermissions getDocumentPermissions() {
             return documentPermissions;
+        }
+
+        /**
+         * Whether the DLS/FLS on this index was produced entirely by implicit role contributions (e.g. from application-privilege-derived
+         * index privileges) and therefore does not require a platinum+ license.
+         */
+        public boolean isDlsFlsLicenseExempt() {
+            return dlsFlsLicenseExempt;
         }
 
         /**
@@ -212,12 +241,20 @@ public class IndicesAccessControl {
             DocumentPermissions constrainedDocumentPermissions = getDocumentPermissions().limitDocumentPermissions(
                 limitedByIndexAccessControl.getDocumentPermissions()
             );
-            return new IndexAccessControl(constrainedFieldPermissions, constrainedDocumentPermissions);
+            boolean exempt = this.dlsFlsLicenseExempt && limitedByIndexAccessControl.dlsFlsLicenseExempt;
+            return new IndexAccessControl(constrainedFieldPermissions, constrainedDocumentPermissions, exempt);
         }
 
         @Override
         public String toString() {
-            return "IndexAccessControl{" + "fieldPermissions=" + fieldPermissions + ", documentPermissions=" + documentPermissions + '}';
+            return "IndexAccessControl{"
+                + "fieldPermissions="
+                + fieldPermissions
+                + ", documentPermissions="
+                + documentPermissions
+                + ", dlsFlsLicenseExempt="
+                + dlsFlsLicenseExempt
+                + '}';
         }
 
         @Override
@@ -241,12 +278,14 @@ public class IndicesAccessControl {
             if (this == o) return true;
             if (o == null || getClass() != o.getClass()) return false;
             IndexAccessControl that = (IndexAccessControl) o;
-            return Objects.equals(fieldPermissions, that.fieldPermissions) && Objects.equals(documentPermissions, that.documentPermissions);
+            return dlsFlsLicenseExempt == that.dlsFlsLicenseExempt
+                && Objects.equals(fieldPermissions, that.fieldPermissions)
+                && Objects.equals(documentPermissions, that.documentPermissions);
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(fieldPermissions, documentPermissions);
+            return Objects.hash(fieldPermissions, documentPermissions, dlsFlsLicenseExempt);
         }
     }
 

@@ -14,6 +14,8 @@ import org.elasticsearch.client.internal.Client;
 import org.elasticsearch.common.bytes.BytesArray;
 import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.settings.SecureString;
+import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.license.LicenseSettings;
 import org.elasticsearch.search.SearchHit;
 import org.elasticsearch.test.SecuritySingleNodeTestCase;
 import org.elasticsearch.xcontent.XContentType;
@@ -58,6 +60,11 @@ public class KibanaAlertsImplicitRolesIT extends SecuritySingleNodeTestCase {
     private static final String ALERTS_INDEX = ".alerts-test";
     private static final String ALERTS_USER = "alerts_user";
     private static final String ALERTS_ROLE = "alerts_role";
+
+    @Override
+    protected Settings nodeSettings() {
+        return Settings.builder().put(super.nodeSettings()).put(LicenseSettings.SELF_GENERATED_LICENSE_TYPE.getKey(), "basic").build();
+    }
 
     @Before
     public void setupTestData() throws Exception {
@@ -766,7 +773,11 @@ public class KibanaAlertsImplicitRolesIT extends SecuritySingleNodeTestCase {
 
         for (ResourcePrivileges rp : response.getIndexPrivileges()) {
             if (ALERTS_INDEX.equals(rp.getResource())) {
-                assertThat("User without alerts privilege should not have read on " + ALERTS_INDEX, rp.getPrivileges().get("read"), equalTo(false));
+                assertThat(
+                    "User without alerts privilege should not have read on " + ALERTS_INDEX,
+                    rp.getPrivileges().get("read"),
+                    equalTo(false)
+                );
             }
         }
     }
@@ -815,7 +826,11 @@ public class KibanaAlertsImplicitRolesIT extends SecuritySingleNodeTestCase {
         for (ResourcePrivileges rp : response.getIndexPrivileges()) {
             if (ALERTS_INDEX.equals(rp.getResource())) {
                 foundAlerts = true;
-                assertThat("Wildcard resource user should have implicit read on " + ALERTS_INDEX, rp.getPrivileges().get("read"), equalTo(true));
+                assertThat(
+                    "Wildcard resource user should have implicit read on " + ALERTS_INDEX,
+                    rp.getPrivileges().get("read"),
+                    equalTo(true)
+                );
             }
             if ("unrelated-index".equals(rp.getResource())) {
                 foundUnrelated = true;

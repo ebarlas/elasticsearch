@@ -661,11 +661,7 @@ public class Security extends Plugin
         this(settings, extensions, Collections.emptyList());
     }
 
-    Security(
-        Settings settings,
-        List<SecurityExtension> extensions,
-        List<ImplicitRoleDescriptorContributor> implicitRoleContributors
-    ) {
+    Security(Settings settings, List<SecurityExtension> extensions, List<ImplicitRoleDescriptorContributor> implicitRoleContributors) {
         // Note: The settings that are passed in here might not be the final values - things like Plugin.additionalSettings()
         // will be called after the plugins are constructed, and may introduce new setting values.
         // Accordingly we should avoid using this settings object for very much and mostly rely on Environment.setting() as provided
