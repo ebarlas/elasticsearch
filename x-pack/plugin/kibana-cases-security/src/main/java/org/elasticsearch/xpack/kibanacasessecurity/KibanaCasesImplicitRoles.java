@@ -15,29 +15,30 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
- * Implicitly grants index privileges to users whose roles include Kibana application privileges
- * with the {@code cases:read} action.
+ * Implicitly grants read access to Cases analytics indices based on Kibana application privileges.
  * <p>
- * Cases analytics indices encode the space in the index name (e.g.
- * {@code .internal.cases.teamred-securitysolution}), so access control is achieved via
- * space-scoped index patterns rather than DLS. For a user with access to space "default",
- * this contributor grants read on {@code .internal.cases*.default-*}. For the wildcard
- * resource ({@code *}), it grants read on {@code .internal.cases*}.
+ * Cases analytics indices encode the space and solution in the index name
+ * (e.g. {@code .internal.cases.default-securitysolution}). Both dimensions are extracted from
+ * the role's resources using {@code space:} and {@code solution:} prefixes:
+ * <ul>
+ *   <li>{@code space:default} + {@code solution:securitySolution}
+ *       → {@code .internal.cases*.default-securitysolution}</li>
+ *   <li>{@code space:default} (no solution) → {@code .internal.cases*.default-*}</li>
+ *   <li>{@code *} → {@code .internal.cases*}</li>
+ * </ul>
  */
 public class KibanaCasesImplicitRoles implements ImplicitRoleDescriptorContributor {
 
     static final String KIBANA_APPLICATION = "kibana-.kibana";
-    static final String RESOURCE_PREFIX = "space:";
+    static final String SPACE_PREFIX = "space:";
+    static final String SOLUTION_PREFIX = "solution:";
     static final String ALL_RESOURCES = "*";
-
     static final String CASES_ACTION = "cases:read";
-
-    /** Matches all cases analytics indices across all spaces and solutions. */
-    static final String ALL_CASES_PATTERN = ".internal.cases*";
 
     @Override
     public Collection<RoleDescriptor.IndicesPrivileges> getImplicitIndicesPrivileges(
@@ -54,8 +55,9 @@ public class KibanaCasesImplicitRoles implements ImplicitRoleDescriptorContribut
             return List.of();
         }
 
-        Set<String> spaceIds = new HashSet<>();
-        boolean allSpaces = false;
+        Set<String> spaces = new HashSet<>();
+        Set<String> solutions = new HashSet<>();
+        boolean allResources = false;
 
         for (RoleDescriptor descriptor : roleDescriptors) {
             for (RoleDescriptor.ApplicationResourcePrivileges appPriv : descriptor.getApplicationPrivileges()) {
@@ -70,41 +72,46 @@ public class KibanaCasesImplicitRoles implements ImplicitRoleDescriptorContribut
                         break;
                     }
                 }
+                if (hasMatchingPrivilege == false) {
+                    continue;
+                }
 
-                if (hasMatchingPrivilege) {
-                    for (String resource : appPriv.getResources()) {
-                        if (ALL_RESOURCES.equals(resource)) {
-                            allSpaces = true;
-                        } else if (resource.startsWith(RESOURCE_PREFIX)) {
-                            spaceIds.add(resource.substring(RESOURCE_PREFIX.length()));
-                        }
+                for (String resource : appPriv.getResources()) {
+                    if (ALL_RESOURCES.equals(resource)) {
+                        allResources = true;
+                    } else if (resource.startsWith(SPACE_PREFIX)) {
+                        spaces.add(resource.substring(SPACE_PREFIX.length()));
+                    } else if (resource.startsWith(SOLUTION_PREFIX)) {
+                        solutions.add(resource.substring(SOLUTION_PREFIX.length()).toLowerCase(Locale.ROOT));
                     }
                 }
             }
         }
 
-        if (allSpaces == false && spaceIds.isEmpty()) {
+        String[] patterns = buildIndexPatterns(spaces, solutions, allResources);
+        if (patterns.length == 0) {
             return List.of();
         }
 
-        String[] indexPatterns;
-        if (allSpaces) {
-            indexPatterns = new String[] { ALL_CASES_PATTERN };
-        } else {
-            indexPatterns = buildSpaceIndexPatterns(spaceIds);
-        }
-
-        List<RoleDescriptor.IndicesPrivileges> result = new ArrayList<>(1);
-        result.add(RoleDescriptor.IndicesPrivileges.builder().indices(indexPatterns).privileges("read").build());
-        return result;
+        return List.of(RoleDescriptor.IndicesPrivileges.builder().indices(patterns).privileges("read").build());
     }
 
-    /**
-     * Builds index patterns that scope access to the given spaces. Each space produces a pattern
-     * like {@code .internal.cases*.{spaceId}-*} which matches all cases index types
-     * (cases, cases-attachments, cases-comments, cases-activity) for that space.
-     */
-    static String[] buildSpaceIndexPatterns(Set<String> spaceIds) {
-        return spaceIds.stream().map(space -> ".internal.cases*." + space + "-*").toArray(String[]::new);
+    static String[] buildIndexPatterns(Set<String> spaces, Set<String> solutions, boolean allResources) {
+        if (allResources) {
+            return new String[] { ".internal.cases*" };
+        }
+        if (spaces.isEmpty()) {
+            return new String[0];
+        }
+        if (solutions.isEmpty()) {
+            return spaces.stream().map(s -> ".internal.cases*." + s + "-*").toArray(String[]::new);
+        }
+        List<String> patterns = new ArrayList<>();
+        for (String space : spaces) {
+            for (String solution : solutions) {
+                patterns.add(".internal.cases*." + space + "-" + solution);
+            }
+        }
+        return patterns.toArray(String[]::new);
     }
 }

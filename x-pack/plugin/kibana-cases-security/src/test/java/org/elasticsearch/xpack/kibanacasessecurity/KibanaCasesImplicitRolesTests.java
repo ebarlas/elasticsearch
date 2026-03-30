@@ -11,7 +11,6 @@ import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.xpack.core.security.authz.RoleDescriptor;
 import org.elasticsearch.xpack.core.security.authz.privilege.ApplicationPrivilegeDescriptor;
 
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -28,240 +27,183 @@ public class KibanaCasesImplicitRolesTests extends ESTestCase {
 
     private final KibanaCasesImplicitRoles contributor = new KibanaCasesImplicitRoles();
 
-    public void testSingleSpaceGrantsSpaceScopedIndexPattern() {
-        Collection<ApplicationPrivilegeDescriptor> storedPrivileges = List.of(
-            new ApplicationPrivilegeDescriptor("kibana-.kibana", "feature_cases_read", Set.of("cases:read"), Map.of())
-        );
-        Collection<RoleDescriptor> roleDescriptors = List.of(roleWithAppPrivilege("feature_cases_read", "space:default"));
+    private static final List<ApplicationPrivilegeDescriptor> STORED_PRIVILEGES = List.of(
+        new ApplicationPrivilegeDescriptor("kibana-.kibana", "feature_cases_read", Set.of("cases:read"), Map.of())
+    );
 
-        Collection<RoleDescriptor.IndicesPrivileges> result = contributor.getImplicitIndicesPrivileges(roleDescriptors, storedPrivileges);
+    // -- buildIndexPatterns --
 
-        assertThat(result, hasSize(1));
-        RoleDescriptor.IndicesPrivileges privilege = result.iterator().next();
-        assertThat(privilege.getIndices(), arrayContaining(".internal.cases*.default-*"));
-        assertThat(privilege.getPrivileges(), arrayContaining("read"));
-        assertThat(privilege.getQuery(), is(nullValue()));
-    }
-
-    public void testMultipleSpacesAcrossRolesAreMerged() {
-        Collection<ApplicationPrivilegeDescriptor> storedPrivileges = List.of(
-            new ApplicationPrivilegeDescriptor("kibana-.kibana", "cases_read", Set.of("cases:read"), Map.of())
-        );
-        Collection<RoleDescriptor> roleDescriptors = List.of(
-            new RoleDescriptor(
-                "role_1",
-                null,
-                null,
-                new RoleDescriptor.ApplicationResourcePrivileges[] {
-                    RoleDescriptor.ApplicationResourcePrivileges.builder()
-                        .application("kibana-.kibana")
-                        .privileges("cases_read")
-                        .resources("space:foo", "space:bar")
-                        .build() },
-                null,
-                null,
-                null,
-                null
-            ),
-            new RoleDescriptor(
-                "role_2",
-                null,
-                null,
-                new RoleDescriptor.ApplicationResourcePrivileges[] {
-                    RoleDescriptor.ApplicationResourcePrivileges.builder()
-                        .application("kibana-.kibana")
-                        .privileges("cases_read")
-                        .resources("space:baz")
-                        .build() },
-                null,
-                null,
-                null,
-                null
-            )
-        );
-
-        Collection<RoleDescriptor.IndicesPrivileges> result = contributor.getImplicitIndicesPrivileges(roleDescriptors, storedPrivileges);
-
-        assertThat(result, hasSize(1));
-        RoleDescriptor.IndicesPrivileges privilege = result.iterator().next();
+    public void testBuildPatternsAllResources() {
         assertThat(
-            privilege.getIndices(),
-            arrayContainingInAnyOrder(".internal.cases*.foo-*", ".internal.cases*.bar-*", ".internal.cases*.baz-*")
+            KibanaCasesImplicitRoles.buildIndexPatterns(Set.of(), Set.of(), true),
+            arrayContaining(".internal.cases*")
         );
-        assertThat(privilege.getQuery(), is(nullValue()));
     }
 
-    public void testWildcardResourceGrantsAllCasesPattern() {
-        Collection<ApplicationPrivilegeDescriptor> storedPrivileges = List.of(
-            new ApplicationPrivilegeDescriptor("kibana-.kibana", "cases_read", Set.of("cases:read"), Map.of())
+    public void testBuildPatternsSpaceOnly() {
+        assertThat(
+            KibanaCasesImplicitRoles.buildIndexPatterns(Set.of("default"), Set.of(), false),
+            arrayContaining(".internal.cases*.default-*")
         );
-        Collection<RoleDescriptor> roleDescriptors = List.of(roleWithAppPrivilege("cases_read", "*"));
+    }
 
-        Collection<RoleDescriptor.IndicesPrivileges> result = contributor.getImplicitIndicesPrivileges(roleDescriptors, storedPrivileges);
+    public void testBuildPatternsSpaceAndSolution() {
+        assertThat(
+            KibanaCasesImplicitRoles.buildIndexPatterns(Set.of("default"), Set.of("securitysolution"), false),
+            arrayContaining(".internal.cases*.default-securitysolution")
+        );
+    }
+
+    public void testBuildPatternsCrossProduct() {
+        assertThat(
+            KibanaCasesImplicitRoles.buildIndexPatterns(Set.of("foo", "bar"), Set.of("securitysolution"), false),
+            arrayContainingInAnyOrder(".internal.cases*.foo-securitysolution", ".internal.cases*.bar-securitysolution")
+        );
+    }
+
+    public void testBuildPatternsNoSpacesReturnsEmpty() {
+        assertThat(KibanaCasesImplicitRoles.buildIndexPatterns(Set.of(), Set.of("securitysolution"), false).length, is(0));
+    }
+
+    // -- integration via getImplicitIndicesPrivileges --
+
+    public void testSpaceAndSolution() {
+        var result = contributor.getImplicitIndicesPrivileges(
+            List.of(roleWithResources("feature_cases_read", "space:default", "solution:securitySolution")),
+            STORED_PRIVILEGES
+        );
 
         assertThat(result, hasSize(1));
-        RoleDescriptor.IndicesPrivileges privilege = result.iterator().next();
-        assertThat(privilege.getIndices(), arrayContaining(".internal.cases*"));
-        assertThat(privilege.getQuery(), is(nullValue()));
+        var priv = result.iterator().next();
+        assertThat(priv.getIndices(), arrayContaining(".internal.cases*.default-securitysolution"));
+        assertThat(priv.getPrivileges(), arrayContaining("read"));
+        assertThat(priv.getQuery(), is(nullValue()));
     }
 
-    public void testWildcardTakesPrecedenceOverSpecificSpaces() {
-        Collection<ApplicationPrivilegeDescriptor> storedPrivileges = List.of(
-            new ApplicationPrivilegeDescriptor("kibana-.kibana", "cases_read", Set.of("cases:read"), Map.of())
+    public void testSpaceOnlyGrantsAllSolutions() {
+        var result = contributor.getImplicitIndicesPrivileges(
+            List.of(roleWithResources("feature_cases_read", "space:default")),
+            STORED_PRIVILEGES
         );
-        Collection<RoleDescriptor> roleDescriptors = List.of(
-            new RoleDescriptor(
-                "role_1",
-                null,
-                null,
-                new RoleDescriptor.ApplicationResourcePrivileges[] {
-                    RoleDescriptor.ApplicationResourcePrivileges.builder()
-                        .application("kibana-.kibana")
-                        .privileges("cases_read")
-                        .resources("*")
-                        .build() },
-                null,
-                null,
-                null,
-                null
-            ),
-            new RoleDescriptor(
-                "role_2",
-                null,
-                null,
-                new RoleDescriptor.ApplicationResourcePrivileges[] {
-                    RoleDescriptor.ApplicationResourcePrivileges.builder()
-                        .application("kibana-.kibana")
-                        .privileges("cases_read")
-                        .resources("space:foo")
-                        .build() },
-                null,
-                null,
-                null,
-                null
+
+        assertThat(result, hasSize(1));
+        assertThat(result.iterator().next().getIndices(), arrayContaining(".internal.cases*.default-*"));
+    }
+
+    public void testWildcardGrantsEverything() {
+        var result = contributor.getImplicitIndicesPrivileges(
+            List.of(roleWithResources("feature_cases_read", "*")),
+            STORED_PRIVILEGES
+        );
+
+        assertThat(result, hasSize(1));
+        assertThat(result.iterator().next().getIndices(), arrayContaining(".internal.cases*"));
+    }
+
+    public void testMultipleSpacesAndSolutions() {
+        var result = contributor.getImplicitIndicesPrivileges(
+            List.of(roleWithResources("feature_cases_read", "space:foo", "space:bar", "solution:securitySolution", "solution:observability")),
+            STORED_PRIVILEGES
+        );
+
+        assertThat(result, hasSize(1));
+        assertThat(
+            result.iterator().next().getIndices(),
+            arrayContainingInAnyOrder(
+                ".internal.cases*.foo-securitysolution",
+                ".internal.cases*.foo-observability",
+                ".internal.cases*.bar-securitysolution",
+                ".internal.cases*.bar-observability"
             )
         );
+    }
 
-        Collection<RoleDescriptor.IndicesPrivileges> result = contributor.getImplicitIndicesPrivileges(roleDescriptors, storedPrivileges);
+    public void testSpacesMergedAcrossRoles() {
+        var result = contributor.getImplicitIndicesPrivileges(
+            List.of(
+                roleWithResources("feature_cases_read", "space:foo", "solution:securitySolution"),
+                roleWithResources("feature_cases_read", "space:bar", "solution:securitySolution")
+            ),
+            STORED_PRIVILEGES
+        );
 
         assertThat(result, hasSize(1));
-        RoleDescriptor.IndicesPrivileges privilege = result.iterator().next();
-        assertThat(privilege.getIndices(), arrayContaining(".internal.cases*"));
+        assertThat(
+            result.iterator().next().getIndices(),
+            arrayContainingInAnyOrder(".internal.cases*.foo-securitysolution", ".internal.cases*.bar-securitysolution")
+        );
+    }
+
+    public void testSolutionLowercased() {
+        var result = contributor.getImplicitIndicesPrivileges(
+            List.of(roleWithResources("feature_cases_read", "space:default", "solution:SecuritySolution")),
+            STORED_PRIVILEGES
+        );
+
+        assertThat(result, hasSize(1));
+        assertThat(result.iterator().next().getIndices(), arrayContaining(".internal.cases*.default-securitysolution"));
     }
 
     public void testNonMatchingApplicationReturnsEmpty() {
-        Collection<ApplicationPrivilegeDescriptor> storedPrivileges = List.of(
+        var stored = List.of(
             new ApplicationPrivilegeDescriptor("other-app", "cases_read", Set.of("cases:read"), Map.of())
         );
-        Collection<RoleDescriptor> roleDescriptors = List.of(
-            new RoleDescriptor(
-                "test_role",
-                null,
-                null,
-                new RoleDescriptor.ApplicationResourcePrivileges[] {
-                    RoleDescriptor.ApplicationResourcePrivileges.builder()
-                        .application("other-app")
-                        .privileges("cases_read")
-                        .resources("space:default")
-                        .build() },
-                null,
-                null,
-                null,
-                null
-            )
+        var result = contributor.getImplicitIndicesPrivileges(
+            List.of(new RoleDescriptor("r", null, null, new RoleDescriptor.ApplicationResourcePrivileges[] {
+                RoleDescriptor.ApplicationResourcePrivileges.builder()
+                    .application("other-app")
+                    .privileges("cases_read")
+                    .resources("space:default")
+                    .build() }, null, null, null, null)),
+            stored
         );
-
-        Collection<RoleDescriptor.IndicesPrivileges> result = contributor.getImplicitIndicesPrivileges(roleDescriptors, storedPrivileges);
-
         assertThat(result, is(empty()));
     }
 
     public void testNonMatchingActionReturnsEmpty() {
-        Collection<ApplicationPrivilegeDescriptor> storedPrivileges = List.of(
+        var stored = List.of(
             new ApplicationPrivilegeDescriptor("kibana-.kibana", "cases_write", Set.of("cases:write"), Map.of())
         );
-        Collection<RoleDescriptor> roleDescriptors = List.of(roleWithAppPrivilege("cases_write", "space:default"));
-
-        Collection<RoleDescriptor.IndicesPrivileges> result = contributor.getImplicitIndicesPrivileges(roleDescriptors, storedPrivileges);
-
-        assertThat(result, is(empty()));
-    }
-
-    public void testResourcesWithoutSpacePrefixAreIgnored() {
-        Collection<ApplicationPrivilegeDescriptor> storedPrivileges = List.of(
-            new ApplicationPrivilegeDescriptor("kibana-.kibana", "cases_read", Set.of("cases:read"), Map.of())
+        assertThat(
+            contributor.getImplicitIndicesPrivileges(List.of(roleWithResources("cases_write", "space:default")), stored),
+            is(empty())
         );
-        Collection<RoleDescriptor> roleDescriptors = List.of(roleWithAppPrivilege("cases_read", "no-prefix-resource"));
-
-        Collection<RoleDescriptor.IndicesPrivileges> result = contributor.getImplicitIndicesPrivileges(roleDescriptors, storedPrivileges);
-
-        assertThat(result, is(empty()));
     }
 
     public void testEmptyRoleDescriptorsReturnsEmpty() {
-        Collection<ApplicationPrivilegeDescriptor> storedPrivileges = List.of(
-            new ApplicationPrivilegeDescriptor("kibana-.kibana", "cases_read", Set.of("cases:read"), Map.of())
-        );
-
-        Collection<RoleDescriptor.IndicesPrivileges> result = contributor.getImplicitIndicesPrivileges(List.of(), storedPrivileges);
-
-        assertThat(result, is(empty()));
+        assertThat(contributor.getImplicitIndicesPrivileges(List.of(), STORED_PRIVILEGES), is(empty()));
     }
 
     public void testEmptyStoredPrivilegesReturnsEmpty() {
-        Collection<RoleDescriptor> roleDescriptors = List.of(roleWithAppPrivilege("cases_read", "space:default"));
-
-        Collection<RoleDescriptor.IndicesPrivileges> result = contributor.getImplicitIndicesPrivileges(roleDescriptors, List.of());
-
-        assertThat(result, is(empty()));
-    }
-
-    public void testPrivilegeWithMultipleActionsIncludingCasesRead() {
-        Collection<ApplicationPrivilegeDescriptor> storedPrivileges = List.of(
-            new ApplicationPrivilegeDescriptor(
-                "kibana-.kibana",
-                "feature_all",
-                Set.of("cases:read", "cases:write", "alerts:read"),
-                Map.of()
-            )
+        assertThat(
+            contributor.getImplicitIndicesPrivileges(List.of(roleWithResources("feature_cases_read", "space:default")), List.of()),
+            is(empty())
         );
-        Collection<RoleDescriptor> roleDescriptors = List.of(roleWithAppPrivilege("feature_all", "space:marketing"));
-
-        Collection<RoleDescriptor.IndicesPrivileges> result = contributor.getImplicitIndicesPrivileges(roleDescriptors, storedPrivileges);
-
-        assertThat(result, hasSize(1));
-        RoleDescriptor.IndicesPrivileges privilege = result.iterator().next();
-        assertThat(privilege.getIndices(), arrayContaining(".internal.cases*.marketing-*"));
     }
 
-    public void testBuildSpaceIndexPatterns() {
-        String[] patterns = KibanaCasesImplicitRoles.buildSpaceIndexPatterns(Set.of("default"));
-        assertThat(patterns, arrayContaining(".internal.cases*.default-*"));
-    }
-
-    public void testBuildSpaceIndexPatternsMultipleSpaces() {
-        String[] patterns = KibanaCasesImplicitRoles.buildSpaceIndexPatterns(Set.of("foo", "bar"));
-        Arrays.sort(patterns);
-        assertThat(patterns, arrayContaining(".internal.cases*.bar-*", ".internal.cases*.foo-*"));
-    }
-
-    public void testNoDlsIsUsed() {
-        Collection<ApplicationPrivilegeDescriptor> storedPrivileges = List.of(
-            new ApplicationPrivilegeDescriptor("kibana-.kibana", "cases_read", Set.of("cases:read"), Map.of())
+    public void testResourcesWithoutPrefixAreIgnored() {
+        assertThat(
+            contributor.getImplicitIndicesPrivileges(
+                List.of(roleWithResources("feature_cases_read", "no-prefix")),
+                STORED_PRIVILEGES
+            ),
+            is(empty())
         );
-        Collection<RoleDescriptor> roleDescriptors = List.of(roleWithAppPrivilege("cases_read", "space:default"));
-
-        Collection<RoleDescriptor.IndicesPrivileges> result = contributor.getImplicitIndicesPrivileges(roleDescriptors, storedPrivileges);
-
-        assertThat(result, hasSize(1));
-        RoleDescriptor.IndicesPrivileges privilege = result.iterator().next();
-        assertThat(privilege.getQuery(), is(nullValue()));
-        assertThat(privilege.getGrantedFields(), is(nullValue()));
-        assertThat(privilege.getDeniedFields(), is(nullValue()));
-        assertFalse(privilege.isUsingFieldLevelSecurity());
     }
 
-    private static RoleDescriptor roleWithAppPrivilege(String privilegeName, String... resources) {
+    public void testNoDlsOrFls() {
+        var result = contributor.getImplicitIndicesPrivileges(
+            List.of(roleWithResources("feature_cases_read", "space:default", "solution:securitySolution")),
+            STORED_PRIVILEGES
+        );
+        assertThat(result, hasSize(1));
+        var priv = result.iterator().next();
+        assertThat(priv.getQuery(), is(nullValue()));
+        assertThat(priv.getGrantedFields(), is(nullValue()));
+        assertThat(priv.getDeniedFields(), is(nullValue()));
+    }
+
+    private static RoleDescriptor roleWithResources(String privilegeName, String... resources) {
         return new RoleDescriptor(
             "test_role",
             null,

@@ -1,5 +1,5 @@
-cases_role:
+sec_cases_default_role:
   applications:
     - application: 'kibana-.kibana'
       privileges: ['feature_cases_read']
-      resources: ['space:default']
+      resources: ['space:default', 'solution:securitySolution']

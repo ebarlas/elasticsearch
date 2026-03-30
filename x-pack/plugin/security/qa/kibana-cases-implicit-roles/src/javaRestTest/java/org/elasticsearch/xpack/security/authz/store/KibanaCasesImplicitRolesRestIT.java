@@ -29,23 +29,17 @@ import org.junit.ClassRule;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
-import java.util.stream.Collectors;
 
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 
 /**
  * Integration test verifying that the {@code kibana-cases-security} module's implicit role
- * contribution works end-to-end in a real cluster deployment. The cluster runs in a separate
- * process with the {@code x-pack-kibana-cases-security} module installed, so the SPI-based
- * {@code ImplicitRoleDescriptorContributor} must be discovered via {@code META-INF/services}
- * for the test to pass.
+ * contribution works end-to-end with solution-level gating via {@code solution:} resources.
  * <p>
- * Cases analytics indices encode the space in the index name (e.g.
- * {@code .internal.cases.default-securitysolution}), so access control is pattern-based
- * rather than DLS-based. A user with {@code cases:read} for {@code space:default} gets
- * implicit read on {@code .internal.cases*.default-*} and cannot access indices for other spaces.
+ * The role grants {@code cases:read} with {@code space:default} and
+ * {@code solution:securitySolution}, so the user should only access
+ * {@code .internal.cases*.default-securitysolution} indices.
  */
 public class KibanaCasesImplicitRolesRestIT extends ESRestTestCase {
 
@@ -58,12 +52,10 @@ public class KibanaCasesImplicitRolesRestIT extends ESRestTestCase {
     private static final String NO_PRIV_USER = "no_priv_user";
     private static final SecureString NO_PRIV_PASSWORD = new SecureString("no-priv-password".toCharArray());
 
-    /** Cases index in the default space for the security solution */
-    private static final String CASES_DEFAULT = ".internal.cases.default-securitysolution";
-    /** Cases index in the marketing space for the security solution */
-    private static final String CASES_MARKETING = ".internal.cases.marketing-securitysolution";
-    /** Cases attachments index in the default space */
-    private static final String CASES_ATTACHMENTS_DEFAULT = ".internal.cases-attachments.default-securitysolution";
+    private static final String CASES_DEFAULT_SECURITY = ".internal.cases.default-securitysolution";
+    private static final String CASES_DEFAULT_OBS = ".internal.cases.default-observability";
+    private static final String CASES_MARKETING_SECURITY = ".internal.cases.marketing-securitysolution";
+    private static final String ATTACHMENTS_DEFAULT_SECURITY = ".internal.cases-attachments.default-securitysolution";
 
     @ClassRule
     public static ElasticsearchCluster cluster = ElasticsearchCluster.local()
@@ -95,99 +87,67 @@ public class KibanaCasesImplicitRolesRestIT extends ESRestTestCase {
     public void setupTestData() throws Exception {
         securityClient = new TestSecurityClient(adminClient());
 
-        // Register the stored application privilege whose actions include cases:read
         securityClient.putApplicationPrivilege("kibana-.kibana", "feature_cases_read", new String[] { "cases:read" });
-
-        // Create users: one with cases_role (defined in roles.yml for space:default), one with no privileges
-        securityClient.putUser(new User(CASES_USER, "cases_role"), CASES_PASSWORD);
+        securityClient.putUser(new User(CASES_USER, "sec_cases_default_role"), CASES_PASSWORD);
         securityClient.putUser(new User(NO_PRIV_USER), NO_PRIV_PASSWORD);
 
-        // Create per-space cases analytics indices and populate with test data
         RequestOptions permissive = RequestOptions.DEFAULT.toBuilder().setWarningsHandler(WarningsHandler.PERMISSIVE).build();
-
-        for (String index : List.of(CASES_DEFAULT, CASES_MARKETING, CASES_ATTACHMENTS_DEFAULT)) {
+        for (String index : List.of(CASES_DEFAULT_SECURITY, CASES_DEFAULT_OBS, CASES_MARKETING_SECURITY, ATTACHMENTS_DEFAULT_SECURITY)) {
             Request createIndex = new Request("PUT", index);
             createIndex.setOptions(permissive);
             adminClient().performRequest(createIndex);
         }
 
-        indexDoc(CASES_DEFAULT, "case-1", """
-            {"title": "case in default space", "status": "open"}""");
-        indexDoc(CASES_MARKETING, "case-2", """
-            {"title": "case in marketing space", "status": "open"}""");
-        indexDoc(CASES_ATTACHMENTS_DEFAULT, "attachment-1", """
+        indexDoc(CASES_DEFAULT_SECURITY, "case-1", """
+            {"title": "security case in default space"}""");
+        indexDoc(CASES_DEFAULT_OBS, "case-2", """
+            {"title": "observability case in default space"}""");
+        indexDoc(CASES_MARKETING_SECURITY, "case-3", """
+            {"title": "security case in marketing space"}""");
+        indexDoc(ATTACHMENTS_DEFAULT_SECURITY, "att-1", """
             {"case_id": "case-1", "type": "file"}""");
 
-        for (String index : List.of(CASES_DEFAULT, CASES_MARKETING, CASES_ATTACHMENTS_DEFAULT)) {
+        for (String index : List.of(CASES_DEFAULT_SECURITY, CASES_DEFAULT_OBS, CASES_MARKETING_SECURITY, ATTACHMENTS_DEFAULT_SECURITY)) {
             Request refresh = new Request("POST", index + "/_refresh");
             refresh.setOptions(permissive);
             adminClient().performRequest(refresh);
         }
     }
 
-    /**
-     * Verifies that a user with {@code cases:read} for {@code space:default} can search
-     * cases indices in the default space.
-     */
-    public void testImplicitCasesAccessForDefaultSpace() throws Exception {
-        RequestOptions casesAuth = requestOptionsForUser(CASES_USER, CASES_PASSWORD);
-
-        Request search = new Request("GET", CASES_DEFAULT + "/_search");
-        search.setOptions(casesAuth);
-
-        Response response = client().performRequest(search);
-        Map<String, Object> responseMap = entityAsMap(response);
-
-        int failedShards = ObjectPath.eval("_shards.failed", responseMap);
-        assertThat(failedShards, equalTo(0));
-
-        List<Map<String, Object>> hits = ObjectPath.eval("hits.hits", responseMap);
+    public void testAccessGrantedForMatchingSpaceAndSolution() throws Exception {
+        var hits = searchHits(CASES_USER, CASES_PASSWORD, CASES_DEFAULT_SECURITY);
         assertThat(hits.size(), equalTo(1));
         assertThat(hits.get(0).get("_id"), equalTo("case-1"));
     }
 
-    /**
-     * Verifies that the implicit pattern also covers other index types (e.g. attachments)
-     * in the same space.
-     */
-    public void testImplicitAccessCoversAttachmentsIndex() throws Exception {
-        RequestOptions casesAuth = requestOptionsForUser(CASES_USER, CASES_PASSWORD);
-
-        Request search = new Request("GET", CASES_ATTACHMENTS_DEFAULT + "/_search");
-        search.setOptions(casesAuth);
-
-        Response response = client().performRequest(search);
-        Map<String, Object> responseMap = entityAsMap(response);
-
-        List<Map<String, Object>> hits = ObjectPath.eval("hits.hits", responseMap);
+    public void testAccessCoversAttachmentsForSameSpaceAndSolution() throws Exception {
+        var hits = searchHits(CASES_USER, CASES_PASSWORD, ATTACHMENTS_DEFAULT_SECURITY);
         assertThat(hits.size(), equalTo(1));
-        assertThat(hits.get(0).get("_id"), equalTo("attachment-1"));
+        assertThat(hits.get(0).get("_id"), equalTo("att-1"));
     }
 
-    /**
-     * Verifies that a user with {@code cases:read} for {@code space:default} is denied
-     * access to a cases index in a different space (marketing).
-     */
-    public void testAccessDeniedForOtherSpace() {
-        RequestOptions casesAuth = requestOptionsForUser(CASES_USER, CASES_PASSWORD);
-
-        Request search = new Request("GET", CASES_MARKETING + "/_search");
-        search.setOptions(casesAuth);
-
-        ResponseException e = expectThrows(ResponseException.class, () -> client().performRequest(search));
-        assertThat(e.getResponse().getStatusLine().getStatusCode(), equalTo(403));
-        assertThat(e.getMessage(), containsString("is unauthorized"));
+    public void testAccessDeniedForDifferentSolution() {
+        assertSearchDenied(CASES_USER, CASES_PASSWORD, CASES_DEFAULT_OBS);
     }
 
-    /**
-     * Verifies that a user without any Kibana application privileges is denied access entirely.
-     */
+    public void testAccessDeniedForDifferentSpace() {
+        assertSearchDenied(CASES_USER, CASES_PASSWORD, CASES_MARKETING_SECURITY);
+    }
+
     public void testUserWithoutAppPrivilegeIsDenied() {
-        RequestOptions noPrivAuth = requestOptionsForUser(NO_PRIV_USER, NO_PRIV_PASSWORD);
+        assertSearchDenied(NO_PRIV_USER, NO_PRIV_PASSWORD, CASES_DEFAULT_SECURITY);
+    }
 
-        Request search = new Request("GET", CASES_DEFAULT + "/_search");
-        search.setOptions(noPrivAuth);
+    private List<Map<String, Object>> searchHits(String user, SecureString password, String index) throws IOException {
+        Request search = new Request("GET", index + "/_search");
+        search.setOptions(requestOptionsForUser(user, password));
+        Response response = client().performRequest(search);
+        return ObjectPath.eval("hits.hits", entityAsMap(response));
+    }
 
+    private void assertSearchDenied(String user, SecureString password, String index) {
+        Request search = new Request("GET", index + "/_search");
+        search.setOptions(requestOptionsForUser(user, password));
         ResponseException e = expectThrows(ResponseException.class, () -> client().performRequest(search));
         assertThat(e.getResponse().getStatusLine().getStatusCode(), equalTo(403));
         assertThat(e.getMessage(), containsString("is unauthorized"));
