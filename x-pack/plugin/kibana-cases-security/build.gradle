@@ -1,0 +1,20 @@
+apply plugin: 'elasticsearch.internal-es-plugin'
+apply plugin: 'elasticsearch.internal-cluster-test'
+
+esplugin {
+  name = 'x-pack-kibana-cases-security'
+  description = 'Implicit security privileges for Kibana Cases analytics indices'
+  classname = 'org.elasticsearch.xpack.kibanacasessecurity.KibanaCasesSecurityPlugin'
+  extendedPlugins = ['x-pack-core', 'x-pack-security']
+}
+
+base {
+  archivesName = 'x-pack-kibana-cases-security'
+}
+
+dependencies {
+  compileOnly project(path: xpackModule('core'))
+  testImplementation(testArtifact(project(xpackModule('core'))))
+}
+
+addQaCheckDependencies(project)
