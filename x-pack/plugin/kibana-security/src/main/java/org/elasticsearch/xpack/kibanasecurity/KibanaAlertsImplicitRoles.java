@@ -62,11 +62,7 @@ public class KibanaAlertsImplicitRoles implements ImplicitRoleDescriptorContribu
     ) {
         List<RoleDescriptor.IndicesPrivileges> result = new ArrayList<>();
         for (ImplicitResourceConfig config : RESOURCE_CONFIGS) {
-            RoleDescriptor.IndicesPrivileges privilege = buildPrivilegeForConfig(
-                config,
-                roleDescriptors,
-                storedApplicationPrivileges
-            );
+            RoleDescriptor.IndicesPrivileges privilege = buildPrivilegeForConfig(config, roleDescriptors, storedApplicationPrivileges);
             if (privilege != null) {
                 result.add(privilege);
             }

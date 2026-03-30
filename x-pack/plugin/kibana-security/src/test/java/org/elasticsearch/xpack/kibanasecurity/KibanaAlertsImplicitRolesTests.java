@@ -10,7 +10,6 @@ package org.elasticsearch.xpack.kibanasecurity;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.xpack.core.security.authz.RoleDescriptor;
 import org.elasticsearch.xpack.core.security.authz.privilege.ApplicationPrivilegeDescriptor;
-
 import org.elasticsearch.xpack.kibanasecurity.KibanaAlertsImplicitRoles.ImplicitResourceConfig;
 
 import java.util.Collection;

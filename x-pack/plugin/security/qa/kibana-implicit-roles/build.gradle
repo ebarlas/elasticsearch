@@ -1,0 +1,17 @@
+apply plugin: 'elasticsearch.internal-java-rest-test'
+
+dependencies {
+  javaRestTestImplementation project(':x-pack:plugin:core')
+  javaRestTestImplementation(testArtifact(project(xpackModule('security'))))
+  javaRestTestImplementation(testArtifact(project(xpackModule('core'))))
+  clusterModules project(':x-pack:plugin:kibana-security')
+}
+
+tasks.named('javaRestTest') {
+  usesDefaultDistribution("to be triaged")
+}
+
+if (buildParams.inFipsJvm) {
+  // This test cluster is using a BASIC license and FIPS 140 mode is not supported in BASIC
+  tasks.named("javaRestTest").configure { enabled = false }
+}
