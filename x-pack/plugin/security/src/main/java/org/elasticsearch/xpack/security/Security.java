@@ -621,7 +621,6 @@ public class Security extends Plugin
     private final SetOnce<DocumentSubsetBitsetCache> dlsBitsetCache = new SetOnce<>();
     private final SetOnce<List<BootstrapCheck>> bootstrapChecks = new SetOnce<>();
     private final List<SecurityExtension> securityExtensions = new ArrayList<>();
-    private final List<ImplicitPrivilegesProvider> implicitPrivilegesProviders = new ArrayList<>();
     private final SetOnce<Transport> transportReference = new SetOnce<>();
     private final SetOnce<ScriptService> scriptServiceReference = new SetOnce<>();
     private final SetOnce<OperatorOnlyRegistry> operatorOnlyRegistry = new SetOnce<>();
@@ -654,14 +653,10 @@ public class Security extends Plugin
     private final SetOnce<List<Closeable>> closableComponents = new SetOnce<>();
 
     public Security(Settings settings) {
-        this(settings, Collections.emptyList(), Collections.emptyList());
+        this(settings, Collections.emptyList());
     }
 
     Security(Settings settings, List<SecurityExtension> extensions) {
-        this(settings, extensions, Collections.emptyList());
-    }
-
-    Security(Settings settings, List<SecurityExtension> extensions, List<ImplicitPrivilegesProvider> implicitPrivilegesProviders) {
         // Note: The settings that are passed in here might not be the final values - things like Plugin.additionalSettings()
         // will be called after the plugins are constructed, and may introduce new setting values.
         // Accordingly we should avoid using this settings object for very much and mostly rely on Environment.setting() as provided
@@ -679,7 +674,6 @@ public class Security extends Plugin
             this.bootstrapChecks.set(Collections.emptyList());
         }
         this.securityExtensions.addAll(extensions);
-        this.implicitPrivilegesProviders.addAll(implicitPrivilegesProviders);
     }
 
     private void ensureNoRemoteClusterCredentialsOnDisabledSecurity(Settings settings) {
@@ -1018,6 +1012,10 @@ public class Security extends Plugin
                 customRoleProviders.put(extension.extensionName(), providers);
             }
         }
+
+        final List<ImplicitPrivilegesProvider> implicitPrivilegesProviders = securityExtensions.stream()
+            .flatMap(ext -> ext.getImplicitPrivilegesProviders(extensionComponents).stream())
+            .toList();
 
         final NativeRolesStore nativeRolesStore = new NativeRolesStore(
             settings,
@@ -2572,7 +2570,6 @@ public class Security extends Plugin
     @Override
     public void loadExtensions(ExtensionLoader loader) {
         securityExtensions.addAll(loader.loadExtensions(SecurityExtension.class));
-        implicitPrivilegesProviders.addAll(loader.loadExtensions(ImplicitPrivilegesProvider.class));
         loadSingletonExtensionAndSetOnce(loader, operatorOnlyRegistry, OperatorOnlyRegistry.class);
         loadSingletonExtensionAndSetOnce(loader, putRoleRequestBuilderFactory, PutRoleRequestBuilderFactory.class);
         loadSingletonExtensionAndSetOnce(loader, bulkPutRoleRequestBuilderFactory, BulkPutRoleRequestBuilderFactory.class);

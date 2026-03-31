@@ -5,8 +5,8 @@
  * 2.0.
  */
 
-import org.elasticsearch.xpack.core.security.authz.store.ImplicitPrivilegesProvider;
-import org.elasticsearch.xpack.kibanasecurity.KibanaAlertsImplicitRoles;
+import org.elasticsearch.xpack.core.security.SecurityExtension;
+import org.elasticsearch.xpack.kibanasecurity.KibanaSecurityPlugin;
 
 module org.elasticsearch.kibanasecurity {
     requires org.elasticsearch.base;
@@ -16,5 +16,5 @@ module org.elasticsearch.kibanasecurity {
 
     exports org.elasticsearch.xpack.kibanasecurity;
 
-    provides ImplicitPrivilegesProvider with KibanaAlertsImplicitRoles;
+    provides SecurityExtension with KibanaSecurityPlugin;
 }

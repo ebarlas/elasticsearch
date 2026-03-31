@@ -17,6 +17,7 @@ import org.elasticsearch.xpack.core.ssl.SSLService;
 import org.elasticsearch.xpack.kibanasecurity.KibanaAlertsImplicitRoles;
 
 import java.nio.file.Path;
+import java.util.Collections;
 import java.util.List;
 
 public abstract class AbstractLocalStateSecurity extends LocalStateCompositeXPackPlugin implements ReloadablePlugin {
@@ -27,8 +28,7 @@ public abstract class AbstractLocalStateSecurity extends LocalStateCompositeXPac
         plugins.add(
             new Security(
                 settings,
-                AbstractLocalStateSecurity.this.securityExtensions(),
-                AbstractLocalStateSecurity.this.implicitPrivilegesProviders()
+                AbstractLocalStateSecurity.this.securityExtensions()
             ) {
                 @Override
                 protected SSLService getSslService() {
@@ -55,10 +55,11 @@ public abstract class AbstractLocalStateSecurity extends LocalStateCompositeXPac
     }
 
     protected List<SecurityExtension> securityExtensions() {
-        return List.of();
-    }
-
-    protected List<ImplicitPrivilegesProvider> implicitPrivilegesProviders() {
-        return List.of(new KibanaAlertsImplicitRoles());
+        return List.of(new SecurityExtension() {
+            @Override
+            public List<ImplicitPrivilegesProvider> getImplicitPrivilegesProviders(SecurityComponents components) {
+                return List.of(new KibanaAlertsImplicitRoles());
+            }
+        });
     }
 }

@@ -8,6 +8,10 @@
 package org.elasticsearch.xpack.kibanacasessecurity;
 
 import org.elasticsearch.plugins.Plugin;
+import org.elasticsearch.xpack.core.security.SecurityExtension;
+import org.elasticsearch.xpack.core.security.authz.store.ImplicitPrivilegesProvider;
+
+import java.util.List;
 
 /**
  * Provides implicit security privileges for Kibana Cases analytics indices.
@@ -17,4 +21,10 @@ import org.elasticsearch.plugins.Plugin;
  * analytics data directly in Elasticsearch while respecting Kibana's
  * space-based access control.
  */
-public class KibanaCasesSecurityPlugin extends Plugin {}
+public class KibanaCasesSecurityPlugin extends Plugin implements SecurityExtension {
+
+    @Override
+    public List<ImplicitPrivilegesProvider> getImplicitPrivilegesProviders(SecurityComponents components) {
+        return List.of(new KibanaCasesImplicitRoles());
+    }
+}

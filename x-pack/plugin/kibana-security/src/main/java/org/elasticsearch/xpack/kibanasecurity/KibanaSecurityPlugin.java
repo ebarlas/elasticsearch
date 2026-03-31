@@ -8,6 +8,10 @@
 package org.elasticsearch.xpack.kibanasecurity;
 
 import org.elasticsearch.plugins.Plugin;
+import org.elasticsearch.xpack.core.security.SecurityExtension;
+import org.elasticsearch.xpack.core.security.authz.store.ImplicitPrivilegesProvider;
+
+import java.util.List;
 
 /**
  * Provides implicit security privileges for Kibana "as-data" features.
@@ -17,4 +21,10 @@ import org.elasticsearch.plugins.Plugin;
  * resources (such as alerts) directly in Elasticsearch while respecting
  * Kibana's space-based access control.
  */
-public class KibanaSecurityPlugin extends Plugin {}
+public class KibanaSecurityPlugin extends Plugin implements SecurityExtension {
+
+    @Override
+    public List<ImplicitPrivilegesProvider> getImplicitPrivilegesProviders(SecurityComponents components) {
+        return List.of(new KibanaAlertsImplicitRoles());
+    }
+}
