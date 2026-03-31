@@ -1299,17 +1299,17 @@ public class KibanaAlertsImplicitRolesIT extends SecuritySingleNodeTestCase {
      * <p>
      * An API key's effective role is the intersection ({@code LimitedRole}) of the API key's own role
      * and the owner's "limited-by" role. {@code IndicesAccessControl.limitIndexAccessControl} preserves
-     * the DLS license exemption only if <b>both</b> sides are exempt:
-     * <pre>{@code exempt = this.dlsFlsLicenseExempt && other.dlsFlsLicenseExempt}</pre>
+     * the implicitly-granted flag only if <b>both</b> sides are implicit:
+     * <pre>{@code implicit = this.implicitlyGranted && other.implicitlyGranted}</pre>
      * <p>
-     * When the API key's role has <b>explicit</b> DLS (not exempt) on {@code .alerts-*} and the owner's
-     * role has <b>implicit</b> DLS (exempt) from application privileges, the AND yields {@code false}.
+     * When the API key's role has <b>explicit</b> DLS (not implicit) on {@code .alerts-*} and the owner's
+     * role has <b>implicit</b> DLS from application privileges, the AND yields {@code false}.
      * On a basic license the DLS is then blocked by {@code DlsFlsLicenseRequestInterceptor}.
      */
     public void testApiKeyWithExplicitDlsLosesLicenseExemptionOnBasicLicense() throws Exception {
         final Client admin = client();
 
-        // Owner: has manage_own_api_key + implicit alerts access to space:default (license-exempt DLS)
+        // Owner: has manage_own_api_key + implicit alerts access to space:default (implicitly granted DLS)
         new PutRoleRequestBuilder(admin).source("explicit_dls_owner_role", new BytesArray("""
             {
               "cluster": ["manage_own_api_key"],
@@ -1337,7 +1337,7 @@ public class KibanaAlertsImplicitRolesIT extends SecuritySingleNodeTestCase {
             ownerResp.decRef();
         }
 
-        // API key with explicit DLS on .alerts-* (NOT license-exempt)
+        // API key with explicit DLS on .alerts-* (NOT implicitly granted)
         RoleDescriptor apiKeyRole = new RoleDescriptor(
             "api_key_explicit_dls",
             null,

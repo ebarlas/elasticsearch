@@ -82,7 +82,7 @@ public class SecurityIndexReaderWrapper implements CheckedFunction<DirectoryRead
                 return reader;
             }
 
-            if (!DOCUMENT_LEVEL_SECURITY_FEATURE.checkWithoutTracking(licenseState) && !permissions.isDlsFlsLicenseExempt()) {
+            if (!DOCUMENT_LEVEL_SECURITY_FEATURE.checkWithoutTracking(licenseState) && !permissions.isImplicitlyGranted()) {
                 return reader;
             }
 

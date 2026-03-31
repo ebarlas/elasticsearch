@@ -61,7 +61,7 @@ public class DlsFlsFeatureTrackingIndicesAccessControlWrapper {
         }
 
         private void trackUsage(IndexAccessControl iac) {
-            if (iac.isDlsFlsLicenseExempt()) {
+            if (iac.isImplicitlyGranted()) {
                 return;
             }
             if (iac.getDocumentPermissions().hasDocumentLevelPermissions()) {

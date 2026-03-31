@@ -759,11 +759,11 @@ public final class IndicesPermission {
             } else {
                 fieldPermissions = FieldPermissions.DEFAULT;
             }
-            final boolean dlsFlsLicenseExempt = !indicesWithExplicitDlsFls.contains(index)
+            final boolean implicitlyGranted = !indicesWithExplicitDlsFls.contains(index)
                 && (documentPermissions.hasDocumentLevelPermissions() || fieldPermissions.hasFieldLevelSecurity());
             indexPermissions.put(
                 index,
-                new IndicesAccessControl.IndexAccessControl(fieldPermissions, documentPermissions, dlsFlsLicenseExempt)
+                new IndicesAccessControl.IndexAccessControl(fieldPermissions, documentPermissions, implicitlyGranted)
             );
         }
         return unmodifiableMap(indexPermissions);
