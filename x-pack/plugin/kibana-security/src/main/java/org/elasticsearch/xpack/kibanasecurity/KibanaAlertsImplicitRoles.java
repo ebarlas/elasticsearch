@@ -29,7 +29,7 @@ import java.util.stream.Collectors;
  * with specific actions (e.g. {@code alerts:read}).
  * <p>
  * Each {@link ImplicitResourceConfig} maps a Kibana application privilege action to an index
- * pattern and optional field-level security restrictions. When the user has access to specific
+ * pattern. When the user has access to specific
  * spaces, a DLS query restricts visibility to documents matching those spaces via the
  * {@code kibana.space_ids} field. When the user has the wildcard resource ({@code *}), full
  * document access is granted with no DLS restriction.
@@ -41,19 +41,14 @@ public class KibanaAlertsImplicitRoles implements ImplicitRoleDescriptorContribu
     static final String ALL_RESOURCES = "*";
 
     /**
-     * Maps a Kibana application privilege action to the implicit index privilege it should produce,
-     * including the target index pattern and optional field-level security restrictions.
+     * Maps a Kibana application privilege action to the implicit index privilege it should produce.
      *
      * @param action       the application privilege action to match (e.g. {@code "alerts:read"})
      * @param indexPattern the index pattern to grant read access to (e.g. {@code ".alerts-*"})
-     * @param grantedFields fields to grant access to, or {@code null} for no FLS restriction
-     * @param deniedFields  fields to deny access to, or {@code null} for no FLS restriction
      */
-    record ImplicitResourceConfig(String action, String indexPattern, @Nullable String[] grantedFields, @Nullable String[] deniedFields) {}
+    record ImplicitResourceConfig(String action, String indexPattern) {}
 
-    static final List<ImplicitResourceConfig> RESOURCE_CONFIGS = List.of(
-        new ImplicitResourceConfig("alerts:read", ".alerts-*", null, null)
-    );
+    static final List<ImplicitResourceConfig> RESOURCE_CONFIGS = List.of(new ImplicitResourceConfig("alerts:read", ".alerts-*"));
 
     @Override
     public Collection<RoleDescriptor.IndicesPrivileges> getImplicitIndicesPrivileges(
@@ -91,7 +86,7 @@ public class KibanaAlertsImplicitRoles implements ImplicitRoleDescriptorContribu
 
         for (RoleDescriptor descriptor : roleDescriptors) {
             for (RoleDescriptor.ApplicationResourcePrivileges appPriv : descriptor.getApplicationPrivileges()) {
-                if (KIBANA_APPLICATION.equals(appPriv.getApplication()) == false) {
+                if (!KIBANA_APPLICATION.equals(appPriv.getApplication())) {
                     continue;
                 }
 
@@ -115,7 +110,7 @@ public class KibanaAlertsImplicitRoles implements ImplicitRoleDescriptorContribu
             }
         }
 
-        if (allSpaces == false && spaceIds.isEmpty()) {
+        if (!allSpaces && spaceIds.isEmpty()) {
             return null;
         }
 
@@ -123,14 +118,7 @@ public class KibanaAlertsImplicitRoles implements ImplicitRoleDescriptorContribu
             .indices(config.indexPattern())
             .privileges("read");
 
-        if (config.grantedFields() != null) {
-            builder.grantedFields(config.grantedFields());
-        }
-        if (config.deniedFields() != null) {
-            builder.deniedFields(config.deniedFields());
-        }
-
-        if (allSpaces == false) {
+        if (!allSpaces) {
             builder.query(buildSpaceIdsDlsQuery(spaceIds));
         }
 
