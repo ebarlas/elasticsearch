@@ -38,7 +38,7 @@ import static org.hamcrest.Matchers.equalTo;
 /**
  * Integration test verifying that the {@code kibana-security} module's implicit role contribution
  * works end-to-end in a real cluster deployment. The cluster runs in a separate process with the
- * {@code x-pack-kibana-security} module installed, so the SPI-based {@code ImplicitRoleDescriptorContributor}
+ * {@code x-pack-kibana-security} module installed, so the SPI-based {@code ImplicitPrivilegesProvider}
  * must be discovered via {@code META-INF/services} for the test to pass.
  * <p>
  * A single representative scenario is tested: a user with Kibana application privileges for

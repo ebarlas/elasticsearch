@@ -12,7 +12,7 @@ import org.elasticsearch.license.XPackLicenseState;
 import org.elasticsearch.plugins.ReloadablePlugin;
 import org.elasticsearch.xpack.core.LocalStateCompositeXPackPlugin;
 import org.elasticsearch.xpack.core.security.SecurityExtension;
-import org.elasticsearch.xpack.core.security.authz.store.ImplicitRoleDescriptorContributor;
+import org.elasticsearch.xpack.core.security.authz.store.ImplicitPrivilegesProvider;
 import org.elasticsearch.xpack.core.ssl.SSLService;
 import org.elasticsearch.xpack.kibanasecurity.KibanaAlertsImplicitRoles;
 
@@ -28,7 +28,7 @@ public abstract class AbstractLocalStateSecurity extends LocalStateCompositeXPac
             new Security(
                 settings,
                 AbstractLocalStateSecurity.this.securityExtensions(),
-                AbstractLocalStateSecurity.this.implicitRoleContributors()
+                AbstractLocalStateSecurity.this.implicitPrivilegesProviders()
             ) {
                 @Override
                 protected SSLService getSslService() {
@@ -58,7 +58,7 @@ public abstract class AbstractLocalStateSecurity extends LocalStateCompositeXPac
         return List.of();
     }
 
-    protected List<ImplicitRoleDescriptorContributor> implicitRoleContributors() {
+    protected List<ImplicitPrivilegesProvider> implicitPrivilegesProviders() {
         return List.of(new KibanaAlertsImplicitRoles());
     }
 }

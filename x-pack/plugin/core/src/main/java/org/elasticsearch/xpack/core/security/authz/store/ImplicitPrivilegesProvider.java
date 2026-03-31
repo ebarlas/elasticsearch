@@ -17,11 +17,11 @@ import java.util.Collection;
  * granted based on a user's application privileges.
  * <p>
  * During role building, after application privileges are resolved from the privilege store,
- * each registered contributor is invoked with the user's role descriptors and the stored
+ * each registered provider is invoked with the user's role descriptors and the stored
  * application privilege definitions. Any returned {@link RoleDescriptor.IndicesPrivileges}
  * entries are merged into the built role as if they had been declared explicitly.
  */
-public interface ImplicitRoleDescriptorContributor {
+public interface ImplicitPrivilegesProvider {
 
     /**
      * Returns additional index privileges that should be implicitly added to the role

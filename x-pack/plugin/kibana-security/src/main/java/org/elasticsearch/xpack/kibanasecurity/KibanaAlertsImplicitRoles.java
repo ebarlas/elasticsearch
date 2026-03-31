@@ -13,7 +13,7 @@ import org.elasticsearch.xcontent.XContentBuilder;
 import org.elasticsearch.xcontent.json.JsonXContent;
 import org.elasticsearch.xpack.core.security.authz.RoleDescriptor;
 import org.elasticsearch.xpack.core.security.authz.privilege.ApplicationPrivilegeDescriptor;
-import org.elasticsearch.xpack.core.security.authz.store.ImplicitRoleDescriptorContributor;
+import org.elasticsearch.xpack.core.security.authz.store.ImplicitPrivilegesProvider;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -34,7 +34,7 @@ import java.util.stream.Collectors;
  * {@code kibana.space_ids} field. When the user has the wildcard resource ({@code *}), full
  * document access is granted with no DLS restriction.
  */
-public class KibanaAlertsImplicitRoles implements ImplicitRoleDescriptorContributor {
+public class KibanaAlertsImplicitRoles implements ImplicitPrivilegesProvider {
 
     static final String KIBANA_APPLICATION = "kibana-.kibana";
     static final String RESOURCE_PREFIX = "space:";

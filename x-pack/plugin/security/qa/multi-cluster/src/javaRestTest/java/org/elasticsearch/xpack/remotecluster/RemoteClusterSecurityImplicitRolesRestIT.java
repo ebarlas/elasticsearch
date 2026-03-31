@@ -28,8 +28,8 @@ import static org.hamcrest.Matchers.equalTo;
  * <p>
  * In RCS 2.0, the querying cluster projects the user's {@code remote_indices} into a
  * {@code _remote_user} descriptor, which is intersected with the cross-cluster API key
- * on the fulfilling cluster. The {@link org.elasticsearch.xpack.kibanasecurity.KibanaAlertsImplicitRoles}
- * contributor only adds to {@code indices()} (local), not {@code remoteIndices()}, so the
+ * on the fulfilling cluster. The {@code KibanaAlertsImplicitRoles}
+ * provider only adds to {@code indices()} (local), not {@code remoteIndices()}, so the
  * forwarded descriptor lacks the implicit {@code .alerts-*} privilege.
  * <p>
  * This test verifies that a user who has implicit access locally (via app privileges
@@ -112,6 +112,9 @@ public class RemoteClusterSecurityImplicitRolesRestIT extends AbstractRemoteClus
             { "index": { "_index": ".alerts-test", "_id": "alert-marketing-1" } }
             { "kibana.space_ids": ["marketing"], "message": "alert in marketing space" }
             """);
+        bulkRequest.setOptions(
+            bulkRequest.getOptions().toBuilder().setWarningsHandler(warnings -> false)
+        );
         assertOK(performRequestAgainstFulfillingCluster(bulkRequest));
     }
 

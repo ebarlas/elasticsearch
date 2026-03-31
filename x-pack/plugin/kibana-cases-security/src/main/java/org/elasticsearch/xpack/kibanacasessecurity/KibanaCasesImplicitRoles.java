@@ -9,7 +9,7 @@ package org.elasticsearch.xpack.kibanacasessecurity;
 
 import org.elasticsearch.xpack.core.security.authz.RoleDescriptor;
 import org.elasticsearch.xpack.core.security.authz.privilege.ApplicationPrivilegeDescriptor;
-import org.elasticsearch.xpack.core.security.authz.store.ImplicitRoleDescriptorContributor;
+import org.elasticsearch.xpack.core.security.authz.store.ImplicitPrivilegesProvider;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -32,7 +32,7 @@ import java.util.stream.Collectors;
  *   <li>{@code *} → {@code .internal.cases*}</li>
  * </ul>
  */
-public class KibanaCasesImplicitRoles implements ImplicitRoleDescriptorContributor {
+public class KibanaCasesImplicitRoles implements ImplicitPrivilegesProvider {
 
     static final String KIBANA_APPLICATION = "kibana-.kibana";
     static final String SPACE_PREFIX = "space:";

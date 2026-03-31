@@ -5,7 +5,7 @@
  * 2.0.
  */
 
-import org.elasticsearch.xpack.core.security.authz.store.ImplicitRoleDescriptorContributor;
+import org.elasticsearch.xpack.core.security.authz.store.ImplicitPrivilegesProvider;
 import org.elasticsearch.xpack.kibanasecurity.KibanaAlertsImplicitRoles;
 
 module org.elasticsearch.kibanasecurity {
@@ -16,5 +16,5 @@ module org.elasticsearch.kibanasecurity {
 
     exports org.elasticsearch.xpack.kibanasecurity;
 
-    provides ImplicitRoleDescriptorContributor with KibanaAlertsImplicitRoles;
+    provides ImplicitPrivilegesProvider with KibanaAlertsImplicitRoles;
 }
