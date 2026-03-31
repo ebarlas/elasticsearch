@@ -4,7 +4,7 @@ dependencies {
   javaRestTestImplementation project(':x-pack:plugin:core')
   javaRestTestImplementation(testArtifact(project(xpackModule('security'))))
   javaRestTestImplementation(testArtifact(project(xpackModule('core'))))
-  clusterModules project(':x-pack:plugin:kibana-cases-security')
+  clusterModules project(':x-pack:plugin:kibana-security')
 }
 
 tasks.named('javaRestTest') {

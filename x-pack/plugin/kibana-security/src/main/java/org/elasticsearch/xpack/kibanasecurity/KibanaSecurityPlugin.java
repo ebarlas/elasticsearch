@@ -25,6 +25,6 @@ public class KibanaSecurityPlugin extends Plugin implements SecurityExtension {
 
     @Override
     public List<ImplicitPrivilegesProvider> getImplicitPrivilegesProviders(SecurityComponents components) {
-        return List.of(new KibanaAlertsImplicitRoles());
+        return List.of(new KibanaAlertsImplicitRoles(), new KibanaCasesImplicitRoles());
     }
 }
