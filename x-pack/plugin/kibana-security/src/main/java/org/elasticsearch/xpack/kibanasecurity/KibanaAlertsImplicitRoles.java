@@ -8,7 +8,6 @@
 package org.elasticsearch.xpack.kibanasecurity;
 
 import org.elasticsearch.common.Strings;
-import org.elasticsearch.core.Nullable;
 import org.elasticsearch.xcontent.XContentBuilder;
 import org.elasticsearch.xcontent.json.JsonXContent;
 import org.elasticsearch.xpack.core.security.authz.RoleDescriptor;
@@ -17,112 +16,71 @@ import org.elasticsearch.xpack.core.security.authz.store.ImplicitPrivilegesProvi
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
- * Implicitly grants index privileges to users whose roles include Kibana application privileges
- * with specific actions (e.g. {@code alerts:read}).
+ * Implicitly grants read access to {@code .alerts-*} for users whose roles include Kibana
+ * application privileges with the {@code alerts:read} action.
  * <p>
- * Each {@link ImplicitResourceConfig} maps a Kibana application privilege action to an index
- * pattern. When the user has access to specific
- * spaces, a DLS query restricts visibility to documents matching those spaces via the
- * {@code kibana.space_ids} field. When the user has the wildcard resource ({@code *}), full
- * document access is granted with no DLS restriction.
+ * When the user has access to specific spaces, a DLS query restricts visibility to documents
+ * matching those spaces via the {@code kibana.space_ids} field. When the user has the wildcard
+ * resource ({@code *}), full document access is granted with no DLS restriction.
  */
 public class KibanaAlertsImplicitRoles implements ImplicitPrivilegesProvider {
 
     static final String KIBANA_APPLICATION = "kibana-.kibana";
+    static final String ALERTS_ACTION = "alerts:read";
+    static final String ALERTS_INDEX_PATTERN = ".alerts-*";
     static final String RESOURCE_PREFIX = "space:";
     static final String ALL_RESOURCES = "*";
-
-    /**
-     * Maps a Kibana application privilege action to the implicit index privilege it should produce.
-     *
-     * @param action       the application privilege action to match (e.g. {@code "alerts:read"})
-     * @param indexPattern the index pattern to grant read access to (e.g. {@code ".alerts-*"})
-     */
-    record ImplicitResourceConfig(String action, String indexPattern) {}
-
-    static final List<ImplicitResourceConfig> RESOURCE_CONFIGS = List.of(new ImplicitResourceConfig("alerts:read", ".alerts-*"));
+    static final String INDEX_READ_PRIVILEGE = "read";
 
     @Override
     public Collection<RoleDescriptor.IndicesPrivileges> getImplicitIndicesPrivileges(
         Collection<RoleDescriptor> roleDescriptors,
         Collection<ApplicationPrivilegeDescriptor> storedApplicationPrivileges
     ) {
-        List<RoleDescriptor.IndicesPrivileges> result = new ArrayList<>();
-        for (ImplicitResourceConfig config : RESOURCE_CONFIGS) {
-            RoleDescriptor.IndicesPrivileges privilege = buildPrivilegeForConfig(config, roleDescriptors, storedApplicationPrivileges);
-            if (privilege != null) {
-                result.add(privilege);
-            }
-        }
-        return result;
-    }
-
-    @Nullable
-    static RoleDescriptor.IndicesPrivileges buildPrivilegeForConfig(
-        ImplicitResourceConfig config,
-        Collection<RoleDescriptor> roleDescriptors,
-        Collection<ApplicationPrivilegeDescriptor> storedApplicationPrivileges
-    ) {
         Set<String> matchingPrivilegeNames = storedApplicationPrivileges.stream()
             .filter(d -> KIBANA_APPLICATION.equals(d.getApplication()))
-            .filter(d -> d.getActions().contains(config.action()))
+            .filter(d -> d.getActions().contains(ALERTS_ACTION))
             .map(ApplicationPrivilegeDescriptor::getName)
             .collect(Collectors.toSet());
-
         if (matchingPrivilegeNames.isEmpty()) {
-            return null;
+            return List.of();
         }
 
-        Set<String> spaceIds = new HashSet<>();
-        boolean allSpaces = false;
-
-        for (RoleDescriptor descriptor : roleDescriptors) {
-            for (RoleDescriptor.ApplicationResourcePrivileges appPriv : descriptor.getApplicationPrivileges()) {
-                if (!KIBANA_APPLICATION.equals(appPriv.getApplication())) {
-                    continue;
-                }
-
-                boolean hasMatchingPrivilege = false;
-                for (String privName : appPriv.getPrivileges()) {
-                    if (matchingPrivilegeNames.contains(privName)) {
-                        hasMatchingPrivilege = true;
-                        break;
-                    }
-                }
-
-                if (hasMatchingPrivilege) {
-                    for (String resource : appPriv.getResources()) {
-                        if (ALL_RESOURCES.equals(resource)) {
-                            allSpaces = true;
-                        } else if (resource.startsWith(RESOURCE_PREFIX)) {
-                            spaceIds.add(resource.substring(RESOURCE_PREFIX.length()));
-                        }
-                    }
-                }
-            }
+        Set<String> resources = roleDescriptors.stream()
+            .flatMap(rd -> Stream.of(rd.getApplicationPrivileges()))
+            .filter(p -> KIBANA_APPLICATION.equals(p.getApplication()))
+            .filter(p -> Stream.of(p.getPrivileges()).anyMatch(matchingPrivilegeNames::contains))
+            .flatMap(p -> Stream.of(p.getResources()))
+            .collect(Collectors.toSet());
+        if (resources.isEmpty()) {
+            return List.of();
+        }
+        if (resources.contains(ALL_RESOURCES)) {
+            return List.of(RoleDescriptor.IndicesPrivileges.builder().indices(ALERTS_INDEX_PATTERN).privileges(INDEX_READ_PRIVILEGE).build());
         }
 
-        if (!allSpaces && spaceIds.isEmpty()) {
-            return null;
+        Set<String> spaceIds = resources.stream()
+            .filter(r -> r.startsWith(RESOURCE_PREFIX))
+            .map(r -> r.substring(RESOURCE_PREFIX.length()))
+            .collect(Collectors.toSet());
+        if (spaceIds.isEmpty()) {
+            return List.of();
         }
 
-        RoleDescriptor.IndicesPrivileges.Builder builder = RoleDescriptor.IndicesPrivileges.builder()
-            .indices(config.indexPattern())
-            .privileges("read");
-
-        if (!allSpaces) {
-            builder.query(buildSpaceIdsDlsQuery(spaceIds));
-        }
-
-        return builder.build();
+        return List.of(
+            RoleDescriptor.IndicesPrivileges.builder()
+                .indices(ALERTS_INDEX_PATTERN)
+                .privileges(INDEX_READ_PRIVILEGE)
+                .query(buildSpaceIdsDlsQuery(spaceIds))
+                .build()
+        );
     }
 
     static String buildSpaceIdsDlsQuery(Set<String> spaceIds) {

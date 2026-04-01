@@ -10,7 +10,6 @@ package org.elasticsearch.xpack.kibanasecurity;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.xpack.core.security.authz.RoleDescriptor;
 import org.elasticsearch.xpack.core.security.authz.privilege.ApplicationPrivilegeDescriptor;
-import org.elasticsearch.xpack.kibanasecurity.KibanaAlertsImplicitRoles.ImplicitResourceConfig;
 
 import java.util.Collection;
 import java.util.List;
@@ -341,67 +340,4 @@ public class KibanaAlertsImplicitRolesTests extends ESTestCase {
         assertTrue(query.contains("default"));
     }
 
-    public void testConfigWithNoMatchingActionReturnsNull() {
-        ImplicitResourceConfig config = new ImplicitResourceConfig("rules:read", ".kibana-alerting-rules-*");
-        Collection<ApplicationPrivilegeDescriptor> storedPrivileges = List.of(
-            new ApplicationPrivilegeDescriptor("kibana-.kibana", "alerting_read", Set.of("alerts:read"), Map.of())
-        );
-        Collection<RoleDescriptor> roleDescriptors = List.of(roleWithAppPrivilege("alerting_read", "space:default"));
-
-        RoleDescriptor.IndicesPrivileges privilege = KibanaAlertsImplicitRoles.buildPrivilegeForConfig(
-            config,
-            roleDescriptors,
-            storedPrivileges
-        );
-
-        assertThat(privilege, is(nullValue()));
-    }
-
-    public void testMultipleConfigsProduceMultiplePrivileges() {
-        ImplicitResourceConfig alertsConfig = new ImplicitResourceConfig("alerts:read", ".alerts-*");
-        ImplicitResourceConfig rulesConfig = new ImplicitResourceConfig("rules:read", ".kibana-alerting-rules-*");
-        Collection<ApplicationPrivilegeDescriptor> storedPrivileges = List.of(
-            new ApplicationPrivilegeDescriptor("kibana-.kibana", "feature_all", Set.of("alerts:read", "rules:read"), Map.of())
-        );
-        Collection<RoleDescriptor> roleDescriptors = List.of(roleWithAppPrivilege("feature_all", "space:marketing"));
-
-        RoleDescriptor.IndicesPrivileges alertsPrivilege = KibanaAlertsImplicitRoles.buildPrivilegeForConfig(
-            alertsConfig,
-            roleDescriptors,
-            storedPrivileges
-        );
-        RoleDescriptor.IndicesPrivileges rulesPrivilege = KibanaAlertsImplicitRoles.buildPrivilegeForConfig(
-            rulesConfig,
-            roleDescriptors,
-            storedPrivileges
-        );
-
-        assertThat(alertsPrivilege, is(notNullValue()));
-        assertThat(alertsPrivilege.getIndices(), arrayContaining(".alerts-*"));
-        assertThat(rulesPrivilege, is(notNullValue()));
-        assertThat(rulesPrivilege.getIndices(), arrayContaining(".kibana-alerting-rules-*"));
-
-        String alertsQuery = alertsPrivilege.getQuery().utf8ToString();
-        String rulesQuery = rulesPrivilege.getQuery().utf8ToString();
-        assertTrue(alertsQuery.contains("marketing"));
-        assertTrue(rulesQuery.contains("marketing"));
-    }
-
-    private static RoleDescriptor roleWithAppPrivilege(String privilegeName, String... resources) {
-        return new RoleDescriptor(
-            "test_role",
-            null,
-            null,
-            new RoleDescriptor.ApplicationResourcePrivileges[] {
-                RoleDescriptor.ApplicationResourcePrivileges.builder()
-                    .application("kibana-.kibana")
-                    .privileges(privilegeName)
-                    .resources(resources)
-                    .build() },
-            null,
-            null,
-            null,
-            null
-        );
-    }
 }
