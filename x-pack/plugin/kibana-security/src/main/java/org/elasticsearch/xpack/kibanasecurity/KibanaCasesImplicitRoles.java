@@ -11,13 +11,12 @@ import org.elasticsearch.xpack.core.security.authz.RoleDescriptor;
 import org.elasticsearch.xpack.core.security.authz.privilege.ApplicationPrivilegeDescriptor;
 import org.elasticsearch.xpack.core.security.authz.store.ImplicitPrivilegesProvider;
 
-import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Implicitly grants read access to Cases analytics indices based on Kibana application privileges.
@@ -35,10 +34,12 @@ import java.util.stream.Collectors;
 public class KibanaCasesImplicitRoles implements ImplicitPrivilegesProvider {
 
     static final String KIBANA_APPLICATION = "kibana-.kibana";
+    static final String CASES_ACTION = "cases:read";
+    static final String CASES_INDEX_PREFIX = ".internal.cases*";
     static final String SPACE_PREFIX = "space:";
     static final String SOLUTION_PREFIX = "solution:";
     static final String ALL_RESOURCES = "*";
-    static final String CASES_ACTION = "cases:read";
+    static final String INDEX_READ_PRIVILEGE = "read";
 
     @Override
     public Collection<RoleDescriptor.IndicesPrivileges> getImplicitIndicesPrivileges(
@@ -50,68 +51,50 @@ public class KibanaCasesImplicitRoles implements ImplicitPrivilegesProvider {
             .filter(d -> d.getActions().contains(CASES_ACTION))
             .map(ApplicationPrivilegeDescriptor::getName)
             .collect(Collectors.toSet());
-
         if (matchingPrivilegeNames.isEmpty()) {
             return List.of();
         }
 
-        Set<String> spaces = new HashSet<>();
-        Set<String> solutions = new HashSet<>();
-        boolean allResources = false;
-
-        for (RoleDescriptor descriptor : roleDescriptors) {
-            for (RoleDescriptor.ApplicationResourcePrivileges appPriv : descriptor.getApplicationPrivileges()) {
-                if (KIBANA_APPLICATION.equals(appPriv.getApplication()) == false) {
-                    continue;
-                }
-
-                boolean hasMatchingPrivilege = false;
-                for (String privName : appPriv.getPrivileges()) {
-                    if (matchingPrivilegeNames.contains(privName)) {
-                        hasMatchingPrivilege = true;
-                        break;
-                    }
-                }
-                if (hasMatchingPrivilege == false) {
-                    continue;
-                }
-
-                for (String resource : appPriv.getResources()) {
-                    if (ALL_RESOURCES.equals(resource)) {
-                        allResources = true;
-                    } else if (resource.startsWith(SPACE_PREFIX)) {
-                        spaces.add(resource.substring(SPACE_PREFIX.length()));
-                    } else if (resource.startsWith(SOLUTION_PREFIX)) {
-                        solutions.add(resource.substring(SOLUTION_PREFIX.length()).toLowerCase(Locale.ROOT));
-                    }
-                }
-            }
+        Set<String> resources = roleDescriptors.stream()
+            .flatMap(rd -> Stream.of(rd.getApplicationPrivileges()))
+            .filter(p -> KIBANA_APPLICATION.equals(p.getApplication()))
+            .filter(p -> Stream.of(p.getPrivileges()).anyMatch(matchingPrivilegeNames::contains))
+            .flatMap(p -> Stream.of(p.getResources()))
+            .collect(Collectors.toSet());
+        if (resources.isEmpty()) {
+            return List.of();
+        }
+        if (resources.contains(ALL_RESOURCES)) {
+            return List.of(RoleDescriptor.IndicesPrivileges.builder().indices(CASES_INDEX_PREFIX).privileges(INDEX_READ_PRIVILEGE).build());
         }
 
-        String[] patterns = buildIndexPatterns(spaces, solutions, allResources);
+        String[] patterns = buildIndexPatterns(resources);
         if (patterns.length == 0) {
             return List.of();
         }
 
-        return List.of(RoleDescriptor.IndicesPrivileges.builder().indices(patterns).privileges("read").build());
+        return List.of(RoleDescriptor.IndicesPrivileges.builder().indices(patterns).privileges(INDEX_READ_PRIVILEGE).build());
     }
 
-    static String[] buildIndexPatterns(Set<String> spaces, Set<String> solutions, boolean allResources) {
-        if (allResources) {
-            return new String[] { ".internal.cases*" };
-        }
+    static String[] buildIndexPatterns(Set<String> resources) {
+        Set<String> spaces = resources.stream()
+            .filter(r -> r.startsWith(SPACE_PREFIX))
+            .map(r -> r.substring(SPACE_PREFIX.length()))
+            .collect(Collectors.toSet());
         if (spaces.isEmpty()) {
             return new String[0];
         }
+
+        Set<String> solutions = resources.stream()
+            .filter(r -> r.startsWith(SOLUTION_PREFIX))
+            .map(r -> r.substring(SOLUTION_PREFIX.length()).toLowerCase(Locale.ROOT))
+            .collect(Collectors.toSet());
         if (solutions.isEmpty()) {
-            return spaces.stream().map(s -> ".internal.cases*." + s + "-*").toArray(String[]::new);
+            return spaces.stream().map(s -> CASES_INDEX_PREFIX + "." + s + "-*").toArray(String[]::new);
         }
-        List<String> patterns = new ArrayList<>();
-        for (String space : spaces) {
-            for (String solution : solutions) {
-                patterns.add(".internal.cases*." + space + "-" + solution);
-            }
-        }
-        return patterns.toArray(String[]::new);
+
+        return spaces.stream()
+            .flatMap(space -> solutions.stream().map(solution -> CASES_INDEX_PREFIX + "." + space + "-" + solution))
+            .toArray(String[]::new);
     }
 }

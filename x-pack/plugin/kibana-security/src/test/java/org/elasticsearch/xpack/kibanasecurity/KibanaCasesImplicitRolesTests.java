@@ -33,36 +33,29 @@ public class KibanaCasesImplicitRolesTests extends ESTestCase {
 
     // -- buildIndexPatterns --
 
-    public void testBuildPatternsAllResources() {
-        assertThat(
-            KibanaCasesImplicitRoles.buildIndexPatterns(Set.of(), Set.of(), true),
-            arrayContaining(".internal.cases*")
-        );
-    }
-
     public void testBuildPatternsSpaceOnly() {
         assertThat(
-            KibanaCasesImplicitRoles.buildIndexPatterns(Set.of("default"), Set.of(), false),
+            KibanaCasesImplicitRoles.buildIndexPatterns(Set.of("space:default")),
             arrayContaining(".internal.cases*.default-*")
         );
     }
 
     public void testBuildPatternsSpaceAndSolution() {
         assertThat(
-            KibanaCasesImplicitRoles.buildIndexPatterns(Set.of("default"), Set.of("securitysolution"), false),
+            KibanaCasesImplicitRoles.buildIndexPatterns(Set.of("space:default", "solution:securitysolution")),
             arrayContaining(".internal.cases*.default-securitysolution")
         );
     }
 
     public void testBuildPatternsCrossProduct() {
         assertThat(
-            KibanaCasesImplicitRoles.buildIndexPatterns(Set.of("foo", "bar"), Set.of("securitysolution"), false),
+            KibanaCasesImplicitRoles.buildIndexPatterns(Set.of("space:foo", "space:bar", "solution:securitysolution")),
             arrayContainingInAnyOrder(".internal.cases*.foo-securitysolution", ".internal.cases*.bar-securitysolution")
         );
     }
 
     public void testBuildPatternsNoSpacesReturnsEmpty() {
-        assertThat(KibanaCasesImplicitRoles.buildIndexPatterns(Set.of(), Set.of("securitysolution"), false).length, is(0));
+        assertThat(KibanaCasesImplicitRoles.buildIndexPatterns(Set.of("solution:securitysolution")).length, is(0));
     }
 
     // -- integration via getImplicitIndicesPrivileges --
