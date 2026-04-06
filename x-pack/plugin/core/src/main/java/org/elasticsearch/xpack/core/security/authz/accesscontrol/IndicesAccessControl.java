@@ -241,7 +241,7 @@ public class IndicesAccessControl {
             DocumentPermissions constrainedDocumentPermissions = getDocumentPermissions().limitDocumentPermissions(
                 limitedByIndexAccessControl.getDocumentPermissions()
             );
-            boolean exempt = this.implicitlyGranted && limitedByIndexAccessControl.implicitlyGranted;
+            boolean exempt = this.implicitlyGranted || limitedByIndexAccessControl.implicitlyGranted;
             return new IndexAccessControl(constrainedFieldPermissions, constrainedDocumentPermissions, exempt);
         }
 

@@ -1295,21 +1295,21 @@ public class KibanaAlertsImplicitRolesIT extends SecuritySingleNodeTestCase {
     }
 
     /**
-     * Observes the interaction between implicit and explicit DLS on API keys under a basic license.
+     * Verifies that an API key with explicit DLS on {@code .alerts-*} still works on a basic license
+     * when the owner has implicit DLS from application privileges.
      * <p>
-     * An API key's effective role is the intersection ({@code LimitedRole}) of the API key's own role
+     * The API key's effective role is the intersection ({@code LimitedRole}) of the API key's own role
      * and the owner's "limited-by" role. {@code IndicesAccessControl.limitIndexAccessControl} preserves
-     * the implicitly-granted flag only if <b>both</b> sides are implicit:
-     * <pre>{@code implicit = this.implicitlyGranted && other.implicitlyGranted}</pre>
+     * the implicitly-granted flag if <b>either</b> side is implicit:
+     * <pre>{@code implicit = this.implicitlyGranted || other.implicitlyGranted}</pre>
      * <p>
-     * When the API key's role has <b>explicit</b> DLS (not implicit) on {@code .alerts-*} and the owner's
-     * role has <b>implicit</b> DLS from application privileges, the AND yields {@code false}.
-     * On a basic license the DLS is then blocked by {@code DlsFlsLicenseRequestInterceptor}.
+     * The implicit DLS is a system-derived security constraint that must remain active regardless of
+     * license tier. The intersection can only narrow access, never widen it, so preserving the exemption
+     * is safe. The effective DLS is the AND of both sides' queries.
      */
-    public void testApiKeyWithExplicitDlsLosesLicenseExemptionOnBasicLicense() throws Exception {
+    public void testApiKeyWithExplicitDlsPreservesLicenseExemptionOnBasicLicense() throws Exception {
         final Client admin = client();
 
-        // Owner: has manage_own_api_key + implicit alerts access to space:default (implicitly granted DLS)
         new PutRoleRequestBuilder(admin).source("explicit_dls_owner_role", new BytesArray("""
             {
               "cluster": ["manage_own_api_key"],
@@ -1325,7 +1325,6 @@ public class KibanaAlertsImplicitRolesIT extends SecuritySingleNodeTestCase {
             .roles("explicit_dls_owner_role")
             .get();
 
-        // Sanity check: the owner can search alerts directly (implicit DLS is exempt from license)
         Client ownerClient = client().filterWithHeader(
             Map.of("Authorization", basicAuthHeaderValue("explicit_dls_owner", new SecureString(TEST_PASSWORD_SECURE_STRING.getChars())))
         );
@@ -1337,7 +1336,7 @@ public class KibanaAlertsImplicitRolesIT extends SecuritySingleNodeTestCase {
             ownerResp.decRef();
         }
 
-        // API key with explicit DLS on .alerts-* (NOT implicitly granted)
+        // API key with explicit DLS on .alerts-* — intersects with the owner's implicit DLS
         RoleDescriptor apiKeyRole = new RoleDescriptor(
             "api_key_explicit_dls",
             null,
@@ -1357,17 +1356,20 @@ public class KibanaAlertsImplicitRolesIT extends SecuritySingleNodeTestCase {
 
         Client apiKeyClient = client().filterWithHeader(Map.of("Authorization", "ApiKey " + base64ApiKeyCredentials(apiKeyResponse)));
 
-        // The intersection of explicit DLS (not exempt) AND implicit DLS (exempt) loses the exemption.
-        // On basic license, the license interceptor blocks the request.
-        ElasticsearchSecurityException ex = expectThrows(
-            ElasticsearchSecurityException.class,
-            () -> apiKeyClient.prepareSearch(ALERTS_INDEX).get()
-        );
-        assertThat(
-            "Expected a license compliance error, not an authorization denial",
-            ex.getMessage(),
-            org.hamcrest.Matchers.containsString("non-compliant")
-        );
+        SearchResponse apiKeyResp = apiKeyClient.prepareSearch(ALERTS_INDEX).setSize(10).get();
+        try {
+            assertThat(apiKeyResp.getFailedShards(), equalTo(0));
+
+            Set<String> returnedIds = Arrays.stream(apiKeyResp.getHits().getHits()).map(SearchHit::getId).collect(Collectors.toSet());
+
+            assertThat(
+                "API key with explicit DLS intersected with implicit DLS should see space:default alerts",
+                returnedIds,
+                equalTo(Set.of("alert-default-1", "alert-both-1"))
+            );
+        } finally {
+            apiKeyResp.decRef();
+        }
     }
 
     private static String base64ApiKeyCredentials(CreateApiKeyResponse response) {
