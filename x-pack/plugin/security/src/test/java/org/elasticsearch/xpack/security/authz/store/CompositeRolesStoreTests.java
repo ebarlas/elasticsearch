@@ -103,6 +103,7 @@ import org.elasticsearch.xpack.core.security.authz.privilege.IndexPrivilegeTests
 import org.elasticsearch.xpack.core.security.authz.privilege.NamedClusterPrivilege;
 import org.elasticsearch.xpack.core.security.authz.restriction.Workflow;
 import org.elasticsearch.xpack.core.security.authz.restriction.WorkflowResolver;
+import org.elasticsearch.xpack.core.security.authz.store.ImplicitPrivilegesProvider;
 import org.elasticsearch.xpack.core.security.authz.store.ReservedRolesStore;
 import org.elasticsearch.xpack.core.security.authz.store.RoleReference;
 import org.elasticsearch.xpack.core.security.authz.store.RoleReferenceIntersection;
@@ -1318,6 +1319,7 @@ public class CompositeRolesStoreTests extends ESTestCase {
             privilegeStore,
             TestRestrictedIndices.RESTRICTED_INDICES,
             List.of(new KibanaAlertsImplicitRoles()),
+            true,
             future
         );
         Role role = future.actionGet();
@@ -1378,6 +1380,7 @@ public class CompositeRolesStoreTests extends ESTestCase {
             privilegeStore,
             TestRestrictedIndices.RESTRICTED_INDICES,
             List.of(new KibanaAlertsImplicitRoles()),
+            true,
             future
         );
         Role role = future.actionGet();
@@ -4360,6 +4363,75 @@ public class CompositeRolesStoreTests extends ESTestCase {
         final String... indices
     ) {
         return indexGroup(privilege, allowRestrictedIndices, query, new FieldPermissionsDefinition(Set.of(flsGroup)), indices);
+    }
+
+    public void testImplicitDlsPrivilegesSuppressedWhenDlsFlsDisabled() {
+        ImplicitPrivilegesProvider dlsProvider = (roleDescriptors, storedPrivileges) -> List.of(
+            IndicesPrivileges.builder()
+                .indices(".alerts-*")
+                .privileges("read")
+                .query("{\"term\":{\"kibana.space_ids\":\"default\"}}")
+                .build()
+        );
+        ImplicitPrivilegesProvider patternProvider = (roleDescriptors, storedPrivileges) -> List.of(
+            IndicesPrivileges.builder().indices(".internal.cases*").privileges("read").build()
+        );
+
+        RoleDescriptor roleDescriptor = new RoleDescriptor("test_role", null, null, null);
+        FieldPermissionsCache cache = new FieldPermissionsCache(Settings.EMPTY);
+
+        PlainActionFuture<Role> future1 = new PlainActionFuture<>();
+        CompositeRolesStore.buildRoleFromDescriptors(
+            Set.of(roleDescriptor),
+            cache,
+            null,
+            TestRestrictedIndices.RESTRICTED_INDICES,
+            List.of(dlsProvider, patternProvider),
+            true,
+            future1
+        );
+        Role roleWithDls = future1.actionGet();
+        IsResourceAuthorizedPredicate readMatcher = roleWithDls.indices().allowedIndicesMatcher("indices:data/read/search");
+        assertThat(readMatcher.test(mockIndexAbstraction(".alerts-test")), equalTo(true));
+        assertThat(readMatcher.test(mockIndexAbstraction(".internal.cases-default")), equalTo(true));
+
+        PlainActionFuture<Role> future2 = new PlainActionFuture<>();
+        CompositeRolesStore.buildRoleFromDescriptors(
+            Set.of(roleDescriptor),
+            cache,
+            null,
+            TestRestrictedIndices.RESTRICTED_INDICES,
+            List.of(dlsProvider, patternProvider),
+            false,
+            future2
+        );
+        Role roleWithoutDls = future2.actionGet();
+        IsResourceAuthorizedPredicate readMatcher2 = roleWithoutDls.indices().allowedIndicesMatcher("indices:data/read/search");
+        assertThat(readMatcher2.test(mockIndexAbstraction(".alerts-test")), equalTo(false));
+        assertThat(readMatcher2.test(mockIndexAbstraction(".internal.cases-default")), equalTo(true));
+    }
+
+    public void testImplicitFlsPrivilegesSuppressedWhenDlsFlsDisabled() {
+        ImplicitPrivilegesProvider flsProvider = (roleDescriptors, storedPrivileges) -> List.of(
+            IndicesPrivileges.builder().indices(".alerts-*").privileges("read").grantedFields("field1", "field2").build()
+        );
+
+        RoleDescriptor roleDescriptor = new RoleDescriptor("test_role", null, null, null);
+        FieldPermissionsCache cache = new FieldPermissionsCache(Settings.EMPTY);
+
+        PlainActionFuture<Role> future = new PlainActionFuture<>();
+        CompositeRolesStore.buildRoleFromDescriptors(
+            Set.of(roleDescriptor),
+            cache,
+            null,
+            TestRestrictedIndices.RESTRICTED_INDICES,
+            List.of(flsProvider),
+            false,
+            future
+        );
+        Role role = future.actionGet();
+        IsResourceAuthorizedPredicate readMatcher = role.indices().allowedIndicesMatcher("indices:data/read/search");
+        assertThat(readMatcher.test(mockIndexAbstraction(".alerts-test")), equalTo(false));
     }
 
     private static Matcher<IndicesPermission.Group> indexGroup(
