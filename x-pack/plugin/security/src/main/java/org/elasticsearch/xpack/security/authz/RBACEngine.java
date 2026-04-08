@@ -895,6 +895,8 @@ public class RBACEngine implements AuthorizationEngine {
                     // if the above invariant is violated, due to a bug, bail and return original indices (these will still be correct)
                     return indices;
                 }
+                // mirror IndicesAccessControl.IndexAccessControl#limitIndexAccessControl: only implicitly granted if both are
+                boolean combinedImplicit = existing.isImplicitlyGranted() && index.isImplicitlyGranted();
                 combinedIndices.put(
                     new Tuple<>(index.allowRestrictedIndices(), index.getIndices()),
                     new GetUserPrivilegesResponse.Indices(
@@ -902,7 +904,8 @@ public class RBACEngine implements AuthorizationEngine {
                         combinedPrivileges,
                         index.getFieldSecurity(),
                         index.getQueries(),
-                        index.allowRestrictedIndices()
+                        index.allowRestrictedIndices(),
+                        combinedImplicit
                     )
                 );
             }
@@ -918,7 +921,8 @@ public class RBACEngine implements AuthorizationEngine {
             group.privilege().name(),
             fieldSecurity,
             queries,
-            group.allowRestrictedIndices()
+            group.allowRestrictedIndices(),
+            group.isImplicitlyGranted()
         );
     }
 

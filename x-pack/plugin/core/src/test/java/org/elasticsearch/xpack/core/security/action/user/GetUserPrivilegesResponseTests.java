@@ -47,6 +47,8 @@ import static org.hamcrest.Matchers.equalTo;
 
 public class GetUserPrivilegesResponseTests extends ESTestCase {
 
+    private static final TransportVersion IMPLICITLY_GRANTED_TV = TransportVersion.fromName("get_user_privileges_implicitly_granted");
+
     public void testSerialization() throws IOException {
         final GetUserPrivilegesResponse original = randomResponse();
 
@@ -68,8 +70,9 @@ public class GetUserPrivilegesResponseTests extends ESTestCase {
     public void testSerializationForCurrentVersion() throws Exception {
         final TransportVersion version = TransportVersionUtils.randomCompatibleVersion();
         final boolean canIncludeRemoteCluster = version.supports(ROLE_REMOTE_CLUSTER_PRIVS);
+        final boolean canIncludeImplicitlyGranted = version.supports(IMPLICITLY_GRANTED_TV);
 
-        final GetUserPrivilegesResponse original = randomResponse(canIncludeRemoteCluster);
+        final GetUserPrivilegesResponse original = randomResponse(canIncludeRemoteCluster, canIncludeImplicitlyGranted);
 
         final BytesStreamOutput out = new BytesStreamOutput();
         out.setTransportVersion(version);
@@ -80,6 +83,43 @@ public class GetUserPrivilegesResponseTests extends ESTestCase {
         in.setTransportVersion(version);
         final GetUserPrivilegesResponse copy = new GetUserPrivilegesResponse(in);
         assertThat(copy, equalTo(original));
+    }
+
+    public void testImplicitlyGrantedDroppedForOlderVersion() throws Exception {
+        final TransportVersion oldVersion = TransportVersionUtils.randomVersionNotSupporting(IMPLICITLY_GRANTED_TV);
+        final boolean canIncludeRemoteCluster = oldVersion.supports(ROLE_REMOTE_CLUSTER_PRIVS);
+
+        final GetUserPrivilegesResponse original = randomResponse(canIncludeRemoteCluster, true);
+        boolean anyImplicit = original.getIndexPrivileges().stream().anyMatch(GetUserPrivilegesResponse.Indices::isImplicitlyGranted)
+            || original.getRemoteIndexPrivileges()
+                .stream()
+                .anyMatch(ri -> ri.indices().isImplicitlyGranted());
+        assumeTrue("Need at least one implicitlyGranted=true entry to exercise the downgrade path", anyImplicit);
+
+        final BytesStreamOutput out = new BytesStreamOutput();
+        out.setTransportVersion(oldVersion);
+        original.writeTo(out);
+
+        final NamedWriteableRegistry registry = new NamedWriteableRegistry(new XPackClientPlugin().getNamedWriteables());
+        StreamInput in = new NamedWriteableAwareStreamInput(ByteBufferStreamInput.wrap(BytesReference.toBytes(out.bytes())), registry);
+        in.setTransportVersion(oldVersion);
+        final GetUserPrivilegesResponse copy = new GetUserPrivilegesResponse(in);
+
+        for (GetUserPrivilegesResponse.Indices idx : copy.getIndexPrivileges()) {
+            assertFalse("implicitlyGranted should be false when deserialized from an older version", idx.isImplicitlyGranted());
+        }
+        for (GetUserPrivilegesResponse.RemoteIndices ri : copy.getRemoteIndexPrivileges()) {
+            assertFalse(
+                "implicitlyGranted should be false for remote indices when deserialized from an older version",
+                ri.indices().isImplicitlyGranted()
+            );
+        }
+    }
+
+    public void testIndicesEqualityIncludesImplicitlyGranted() {
+        var explicit = new GetUserPrivilegesResponse.Indices(List.of("idx-*"), List.of("read"), emptySet(), emptySet(), false, false);
+        var implicit = new GetUserPrivilegesResponse.Indices(List.of("idx-*"), List.of("read"), emptySet(), emptySet(), false, true);
+        assertNotEquals("Indices differing only in implicitlyGranted should not be equal", explicit, implicit);
     }
 
     public void testEqualsAndHashCode() throws IOException {
@@ -113,6 +153,7 @@ public class GetUserPrivilegesResponseTests extends ESTestCase {
                         randomStringSet(1),
                         emptySet(),
                         emptySet(),
+                        randomBoolean(),
                         randomBoolean()
                     )
                 );
@@ -137,6 +178,7 @@ public class GetUserPrivilegesResponseTests extends ESTestCase {
                             randomStringSet(1),
                             emptySet(),
                             emptySet(),
+                            randomBoolean(),
                             randomBoolean()
                         ),
                         randomStringSet(1)
@@ -169,16 +211,16 @@ public class GetUserPrivilegesResponseTests extends ESTestCase {
     }
 
     private GetUserPrivilegesResponse randomResponse() {
-        return randomResponse(true);
+        return randomResponse(true, true);
     }
 
-    private GetUserPrivilegesResponse randomResponse(boolean allowRemoteClusters) {
+    private GetUserPrivilegesResponse randomResponse(boolean allowRemoteClusters, boolean allowImplicitlyGranted) {
         final Set<String> cluster = randomStringSet(5);
         final Set<ConfigurableClusterPrivilege> conditionalCluster = Sets.newHashSet(
             randomArray(3, ConfigurableClusterPrivilege[]::new, () -> new ManageApplicationPrivileges(randomStringSet(3)))
         );
         final Set<GetUserPrivilegesResponse.Indices> index = Sets.newHashSet(
-            randomArray(5, GetUserPrivilegesResponse.Indices[]::new, () -> randomIndices(true))
+            randomArray(5, GetUserPrivilegesResponse.Indices[]::new, () -> randomIndices(true, allowImplicitlyGranted))
         );
         final Set<ApplicationResourcePrivileges> application = Sets.newHashSet(
             randomArray(
@@ -196,7 +238,7 @@ public class GetUserPrivilegesResponseTests extends ESTestCase {
             randomArray(
                 5,
                 GetUserPrivilegesResponse.RemoteIndices[]::new,
-                () -> new GetUserPrivilegesResponse.RemoteIndices(randomIndices(false), randomStringSet(6))
+                () -> new GetUserPrivilegesResponse.RemoteIndices(randomIndices(false, allowImplicitlyGranted), randomStringSet(6))
             )
         );
 
@@ -213,6 +255,10 @@ public class GetUserPrivilegesResponseTests extends ESTestCase {
     }
 
     private GetUserPrivilegesResponse.Indices randomIndices(boolean allowMultipleFlsDlsDefinitions) {
+        return randomIndices(allowMultipleFlsDlsDefinitions, true);
+    }
+
+    private GetUserPrivilegesResponse.Indices randomIndices(boolean allowMultipleFlsDlsDefinitions, boolean allowImplicitlyGranted) {
         return new GetUserPrivilegesResponse.Indices(
             randomStringSet(6),
             randomStringSet(8),
@@ -227,7 +273,8 @@ public class GetUserPrivilegesResponseTests extends ESTestCase {
                 )
             ),
             randomStringSet(allowMultipleFlsDlsDefinitions ? 3 : 1).stream().map(BytesArray::new).collect(Collectors.toSet()),
-            randomBoolean()
+            randomBoolean(),
+            allowImplicitlyGranted && randomBoolean()
         );
     }
 

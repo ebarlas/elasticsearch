@@ -1494,6 +1494,32 @@ public class RBACEngineTests extends ESTestCase {
         assertThat(index1And2NotRestricted.getQueries(), emptyIterable());
     }
 
+    public void testBuildUserPrivilegesResponseMergesImplicitGroupsAsImplicit() {
+        final Role role = Role.builder(RESTRICTED_INDICES, "test", "role")
+            .addImplicit(FieldPermissions.DEFAULT, null, IndexPrivilege.READ, false, ".alerts-*")
+            .addImplicit(FieldPermissions.DEFAULT, null, IndexPrivilege.WRITE, false, ".alerts-*")
+            .build();
+
+        final GetUserPrivilegesResponse response = RBACEngine.buildUserPrivilegesResponseObject(role);
+
+        final GetUserPrivilegesResponse.Indices alerts = findIndexPrivilege(response.getIndexPrivileges(), ".alerts-*");
+        assertThat(alerts.getPrivileges(), containsInAnyOrder("read", "write"));
+        assertTrue("Combined implicit+implicit should remain implicitly granted", alerts.isImplicitlyGranted());
+    }
+
+    public void testBuildUserPrivilegesResponseMergesImplicitWithExplicitAsExplicit() {
+        final Role role = Role.builder(RESTRICTED_INDICES, "test", "role")
+            .add(IndexPrivilege.READ, ".alerts-*")
+            .addImplicit(FieldPermissions.DEFAULT, null, IndexPrivilege.WRITE, false, ".alerts-*")
+            .build();
+
+        final GetUserPrivilegesResponse response = RBACEngine.buildUserPrivilegesResponseObject(role);
+
+        final GetUserPrivilegesResponse.Indices alerts = findIndexPrivilege(response.getIndexPrivileges(), ".alerts-*");
+        assertThat(alerts.getPrivileges(), containsInAnyOrder("read", "write"));
+        assertFalse("Combined implicit+explicit should be marked as explicitly granted", alerts.isImplicitlyGranted());
+    }
+
     public void testBackingIndicesAreIncludedForAuthorizedDataStreams() {
         final String dataStreamName = "my_data_stream";
         User user = new User(randomAlphaOfLengthBetween(4, 12));

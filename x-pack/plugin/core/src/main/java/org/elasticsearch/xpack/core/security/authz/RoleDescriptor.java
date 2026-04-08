@@ -1882,5 +1882,6 @@ public class RoleDescriptor implements ToXContentObject, Writeable {
         ParseField RESTRICTION = new ParseField("restriction");
         ParseField WORKFLOWS = new ParseField("workflows");
         ParseField DESCRIPTION = new ParseField("description");
+        ParseField IMPLICITLY_GRANTED = new ParseField("implicitly_granted");
     }
 }

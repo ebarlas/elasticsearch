@@ -1206,6 +1206,7 @@ public class KibanaAlertsImplicitRolesIT extends SecuritySingleNodeTestCase {
                 foundAlertsIndex = true;
                 assertThat("Implicit .alerts-* privilege should grant read", indexPriv.getPrivileges().contains("read"), equalTo(true));
                 assertThat("Implicit .alerts-* privilege should have a DLS query", indexPriv.getQueries().isEmpty(), equalTo(false));
+                assertTrue("Implicit .alerts-* privilege should be marked as implicitly granted", indexPriv.isImplicitlyGranted());
 
                 boolean queryContainsDefault = false;
                 for (BytesReference query : indexPriv.getQueries()) {
@@ -1254,6 +1255,7 @@ public class KibanaAlertsImplicitRolesIT extends SecuritySingleNodeTestCase {
                 foundAlertsIndex = true;
                 assertThat("Implicit .alerts-* privilege should grant read", indexPriv.getPrivileges().contains("read"), equalTo(true));
                 assertThat("Wildcard resource should produce no DLS query", indexPriv.getQueries().isEmpty(), equalTo(true));
+                assertTrue("Implicit .alerts-* privilege should be marked as implicitly granted", indexPriv.isImplicitlyGranted());
             }
         }
         assertTrue("Get User Privileges should include implicit .alerts-* index privilege", foundAlertsIndex);

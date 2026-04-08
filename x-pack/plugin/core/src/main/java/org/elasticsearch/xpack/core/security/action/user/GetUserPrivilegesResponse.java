@@ -6,6 +6,7 @@
  */
 package org.elasticsearch.xpack.core.security.action.user;
 
+import org.elasticsearch.TransportVersion;
 import org.elasticsearch.action.ActionResponse;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.bytes.BytesReference;
@@ -182,11 +183,16 @@ public final class GetUserPrivilegesResponse extends ActionResponse {
      */
     public static class Indices implements ToXContentObject, Writeable {
 
+        private static final TransportVersion IMPLICIT_GRANTED_IN_RESPONSE = TransportVersion.fromName(
+            "get_user_privileges_implicitly_granted"
+        );
+
         private final Set<String> indices;
         private final Set<String> privileges;
         private final Set<FieldPermissionsDefinition.FieldGrantExcludeGroup> fieldSecurity;
         private final Set<BytesReference> queries;
         private final boolean allowRestrictedIndices;
+        private final boolean implicitlyGranted;
 
         public Indices(
             Collection<String> indices,
@@ -195,12 +201,24 @@ public final class GetUserPrivilegesResponse extends ActionResponse {
             Set<BytesReference> queries,
             boolean allowRestrictedIndices
         ) {
+            this(indices, privileges, fieldSecurity, queries, allowRestrictedIndices, false);
+        }
+
+        public Indices(
+            Collection<String> indices,
+            Collection<String> privileges,
+            Set<FieldPermissionsDefinition.FieldGrantExcludeGroup> fieldSecurity,
+            Set<BytesReference> queries,
+            boolean allowRestrictedIndices,
+            boolean implicitlyGranted
+        ) {
             // The use of TreeSet is to provide a consistent order that can be relied upon in tests
             this.indices = Collections.unmodifiableSet(new TreeSet<>(Objects.requireNonNull(indices)));
             this.privileges = Collections.unmodifiableSet(new TreeSet<>(Objects.requireNonNull(privileges)));
             this.fieldSecurity = Collections.unmodifiableSet(Objects.requireNonNull(fieldSecurity));
             this.queries = Collections.unmodifiableSet(Objects.requireNonNull(queries));
             this.allowRestrictedIndices = allowRestrictedIndices;
+            this.implicitlyGranted = implicitlyGranted;
         }
 
         public Indices(StreamInput in) throws IOException {
@@ -214,6 +232,11 @@ public final class GetUserPrivilegesResponse extends ActionResponse {
             });
             queries = in.readCollectionAsImmutableSet(StreamInput::readBytesReference);
             this.allowRestrictedIndices = in.readBoolean();
+            if (in.getTransportVersion().supports(IMPLICIT_GRANTED_IN_RESPONSE)) {
+                this.implicitlyGranted = in.readBoolean();
+            } else {
+                this.implicitlyGranted = false;
+            }
         }
 
         public Set<String> getIndices() {
@@ -236,6 +259,10 @@ public final class GetUserPrivilegesResponse extends ActionResponse {
             return allowRestrictedIndices;
         }
 
+        public boolean isImplicitlyGranted() {
+            return implicitlyGranted;
+        }
+
         @Override
         public String toString() {
             StringBuilder sb = new StringBuilder(getClass().getSimpleName()).append("[")
@@ -243,6 +270,8 @@ public final class GetUserPrivilegesResponse extends ActionResponse {
                 .append(Strings.collectionToCommaDelimitedString(indices))
                 .append("], allow_restricted_indices=[")
                 .append(allowRestrictedIndices)
+                .append("], implicitly_granted=[")
+                .append(implicitlyGranted)
                 .append("], privileges=[")
                 .append(Strings.collectionToCommaDelimitedString(privileges))
                 .append("]");
@@ -269,12 +298,13 @@ public final class GetUserPrivilegesResponse extends ActionResponse {
                 && this.privileges.equals(that.privileges)
                 && this.fieldSecurity.equals(that.fieldSecurity)
                 && this.queries.equals(that.queries)
-                && this.allowRestrictedIndices == that.allowRestrictedIndices;
+                && this.allowRestrictedIndices == that.allowRestrictedIndices
+                && this.implicitlyGranted == that.implicitlyGranted;
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(indices, privileges, fieldSecurity, queries, allowRestrictedIndices);
+            return Objects.hash(indices, privileges, fieldSecurity, queries, allowRestrictedIndices, implicitlyGranted);
         }
 
         @Override
@@ -312,6 +342,9 @@ public final class GetUserPrivilegesResponse extends ActionResponse {
                 builder.endArray();
             }
             builder.field(RoleDescriptor.Fields.ALLOW_RESTRICTED_INDICES.getPreferredName(), allowRestrictedIndices);
+            if (implicitlyGranted) {
+                builder.field(RoleDescriptor.Fields.IMPLICITLY_GRANTED.getPreferredName(), true);
+            }
         }
 
         private static boolean nonEmpty(String[] grantedFields) {
@@ -328,6 +361,9 @@ public final class GetUserPrivilegesResponse extends ActionResponse {
             });
             out.writeCollection(queries, StreamOutput::writeBytesReference);
             out.writeBoolean(allowRestrictedIndices);
+            if (out.getTransportVersion().supports(IMPLICIT_GRANTED_IN_RESPONSE)) {
+                out.writeBoolean(implicitlyGranted);
+            }
         }
     }
 }

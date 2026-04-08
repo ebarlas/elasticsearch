@@ -102,6 +102,14 @@ public class RestGetUserPrivilegesActionTests extends ESTestCase {
                     Collections.emptySet(),
                     Collections.emptySet(),
                     true
+                ),
+                new GetUserPrivilegesResponse.Indices(
+                    Arrays.asList(".alerts-*"),
+                    Collections.singleton("read"),
+                    Collections.emptySet(),
+                    new LinkedHashSet<>(List.of(new BytesArray("{ \"terms\": { \"kibana.space_ids\": [\"default\"] } }"))),
+                    false,
+                    true
                 )
             )
         );
@@ -269,6 +277,13 @@ public class RestGetUserPrivilegesActionTests extends ESTestCase {
                   "names": [ "index-4" ],
                   "privileges": [ "all" ],
                   "allow_restricted_indices": true
+                },
+                {
+                  "names": [ ".alerts-*" ],
+                  "privileges": [ "read" ],
+                  "query": [ "{ \\"terms\\": { \\"kibana.space_ids\\": [\\"default\\"] } }" ],
+                  "allow_restricted_indices": false,
+                  "implicitly_granted": true
                 }
               ],
               "applications": [
