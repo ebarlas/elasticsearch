@@ -14,16 +14,15 @@ import org.elasticsearch.action.bulk.BulkShardRequest;
 import org.elasticsearch.action.support.SubscribableListener;
 import org.elasticsearch.action.update.UpdateRequest;
 import org.elasticsearch.common.util.concurrent.ThreadContext;
-import org.elasticsearch.license.XPackLicenseState;
 import org.elasticsearch.rest.RestStatus;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.xpack.core.security.authz.AuthorizationEngine;
 import org.elasticsearch.xpack.core.security.authz.AuthorizationEngine.AuthorizationInfo;
 import org.elasticsearch.xpack.core.security.authz.AuthorizationEngine.RequestInfo;
 import org.elasticsearch.xpack.core.security.authz.accesscontrol.IndicesAccessControl;
+import org.elasticsearch.xpack.core.security.authz.permission.Role;
+import org.elasticsearch.xpack.security.authz.RBACEngine;
 
-import static org.elasticsearch.xpack.core.security.SecurityField.DOCUMENT_LEVEL_SECURITY_FEATURE;
-import static org.elasticsearch.xpack.core.security.SecurityField.FIELD_LEVEL_SECURITY_FEATURE;
 import static org.elasticsearch.xpack.core.security.authz.AuthorizationServiceField.INDICES_PERMISSIONS_VALUE;
 
 /**
@@ -34,11 +33,9 @@ public class BulkShardRequestInterceptor implements RequestInterceptor {
     private static final Logger logger = LogManager.getLogger(BulkShardRequestInterceptor.class);
 
     private final ThreadContext threadContext;
-    private final XPackLicenseState licenseState;
 
-    public BulkShardRequestInterceptor(ThreadPool threadPool, XPackLicenseState licenseState) {
+    public BulkShardRequestInterceptor(ThreadPool threadPool) {
         this.threadContext = threadPool.getThreadContext();
-        this.licenseState = licenseState;
     }
 
     @Override
@@ -47,9 +44,9 @@ public class BulkShardRequestInterceptor implements RequestInterceptor {
         AuthorizationEngine authzEngine,
         AuthorizationInfo authorizationInfo
     ) {
-        final boolean isDlsLicensed = DOCUMENT_LEVEL_SECURITY_FEATURE.checkWithoutTracking(licenseState);
-        final boolean isFlsLicensed = FIELD_LEVEL_SECURITY_FEATURE.checkWithoutTracking(licenseState);
-        if (requestInfo.getRequest() instanceof BulkShardRequest bulkShardRequest && (isDlsLicensed || isFlsLicensed)) {
+        final Role role = RBACEngine.maybeGetRBACEngineRole(authorizationInfo);
+        if (requestInfo.getRequest() instanceof BulkShardRequest bulkShardRequest
+            && (role == null || role.hasFieldOrDocumentLevelSecurity())) {
             IndicesAccessControl indicesAccessControl = INDICES_PERMISSIONS_VALUE.get(threadContext);
             // this uses the {@code BulkShardRequest#index()} because the {@code bulkItemRequest#index()}
             // can still be an unresolved date math expression

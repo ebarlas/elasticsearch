@@ -12,16 +12,17 @@ import org.elasticsearch.action.admin.indices.alias.IndicesAliasesRequest;
 import org.elasticsearch.action.support.SubscribableListener;
 import org.elasticsearch.common.util.concurrent.ThreadContext;
 import org.elasticsearch.core.Tuple;
-import org.elasticsearch.license.XPackLicenseState;
 import org.elasticsearch.rest.RestStatus;
 import org.elasticsearch.xpack.core.security.authz.AuthorizationEngine;
 import org.elasticsearch.xpack.core.security.authz.AuthorizationEngine.AuthorizationInfo;
 import org.elasticsearch.xpack.core.security.authz.AuthorizationEngine.RequestInfo;
 import org.elasticsearch.xpack.core.security.authz.accesscontrol.IndicesAccessControl;
+import org.elasticsearch.xpack.core.security.authz.permission.Role;
 import org.elasticsearch.xpack.core.security.support.Exceptions;
 import org.elasticsearch.xpack.security.audit.AuditTrail;
 import org.elasticsearch.xpack.security.audit.AuditTrailService;
 import org.elasticsearch.xpack.security.audit.AuditUtil;
+import org.elasticsearch.xpack.security.authz.RBACEngine;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -30,25 +31,20 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 import static org.elasticsearch.action.support.ContextPreservingActionListener.wrapPreservingContext;
-import static org.elasticsearch.xpack.core.security.SecurityField.DOCUMENT_LEVEL_SECURITY_FEATURE;
-import static org.elasticsearch.xpack.core.security.SecurityField.FIELD_LEVEL_SECURITY_FEATURE;
 import static org.elasticsearch.xpack.core.security.authz.AuthorizationServiceField.INDICES_PERMISSIONS_VALUE;
 
 public final class IndicesAliasesRequestInterceptor implements RequestInterceptor {
 
     private final ThreadContext threadContext;
-    private final XPackLicenseState licenseState;
     private final AuditTrailService auditTrailService;
     private final boolean dlsFlsEnabled;
 
     public IndicesAliasesRequestInterceptor(
         ThreadContext threadContext,
-        XPackLicenseState licenseState,
         AuditTrailService auditTrailService,
         boolean dlsFlsEnabled
     ) {
         this.threadContext = threadContext;
-        this.licenseState = licenseState;
         this.auditTrailService = auditTrailService;
         this.dlsFlsEnabled = dlsFlsEnabled;
     }
@@ -61,10 +57,9 @@ public final class IndicesAliasesRequestInterceptor implements RequestIntercepto
     ) {
         if (requestInfo.getRequest() instanceof IndicesAliasesRequest request) {
             final AuditTrail auditTrail = auditTrailService.get();
-            final boolean isDlsLicensed = DOCUMENT_LEVEL_SECURITY_FEATURE.checkWithoutTracking(licenseState);
-            final boolean isFlsLicensed = FIELD_LEVEL_SECURITY_FEATURE.checkWithoutTracking(licenseState);
+            final Role role = RBACEngine.maybeGetRBACEngineRole(authorizationInfo);
             IndicesAccessControl indicesAccessControl = INDICES_PERMISSIONS_VALUE.get(threadContext);
-            if (dlsFlsEnabled && (isDlsLicensed || isFlsLicensed)) {
+            if (dlsFlsEnabled && (role == null || role.hasFieldOrDocumentLevelSecurity())) {
                 for (IndicesAliasesRequest.AliasActions aliasAction : request.getAliasActions()) {
                     if (aliasAction.actionType() == IndicesAliasesRequest.AliasActions.Type.ADD) {
                         for (String index : aliasAction.indices()) {

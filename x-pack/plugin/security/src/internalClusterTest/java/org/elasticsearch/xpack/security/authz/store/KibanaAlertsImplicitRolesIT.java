@@ -1372,6 +1372,41 @@ public class KibanaAlertsImplicitRolesIT extends SecuritySingleNodeTestCase {
         );
     }
 
+    /**
+     * Verifies that explicit write on .alerts-* is not blocked by the implicit read DLS.
+     * The implicit read group (with DLS) does not match write actions, so it should not
+     * contribute DLS to the IndexAccessControl for the write request.
+     */
+    public void testExplicitWriteNotBlockedByImplicitReadDls() throws Exception {
+        final Client admin = client();
+
+        new PutRoleRequestBuilder(admin).source("write_plus_implicit_role", new BytesArray("""
+            {
+              "indices": [{
+                "names": [".alerts-*"],
+                "privileges": ["write"],
+                "allow_restricted_indices": true
+              }],
+              "applications": [{
+                "application": "kibana-.kibana",
+                "privileges": ["feature_alerting_read"],
+                "resources": ["space:default"]
+              }]
+            }
+            """), XContentType.JSON).get();
+
+        new PutUserRequestBuilder(admin).username("write_implicit_user")
+            .password(TEST_PASSWORD_SECURE_STRING, getFastStoredHashAlgoForTests())
+            .roles("write_plus_implicit_role")
+            .get();
+
+        Client writeClient = client().filterWithHeader(
+            Map.of("Authorization", basicAuthHeaderValue("write_implicit_user", new SecureString(TEST_PASSWORD_SECURE_STRING.getChars())))
+        );
+
+        writeClient.prepareUpdate(ALERTS_INDEX, "alert-default-1").setDoc(Map.of("message", "updated alert")).get();
+    }
+
     private static String base64ApiKeyCredentials(CreateApiKeyResponse response) {
         return Base64.getEncoder().encodeToString((response.getId() + ":" + response.getKey()).getBytes(StandardCharsets.UTF_8));
     }

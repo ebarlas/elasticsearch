@@ -12,18 +12,17 @@ import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.IndicesRequest;
 import org.elasticsearch.action.support.SubscribableListener;
 import org.elasticsearch.common.util.concurrent.ThreadContext;
-import org.elasticsearch.license.XPackLicenseState;
 import org.elasticsearch.transport.TransportActionProxy;
 import org.elasticsearch.xpack.core.security.authz.AuthorizationEngine;
 import org.elasticsearch.xpack.core.security.authz.AuthorizationEngine.AuthorizationInfo;
 import org.elasticsearch.xpack.core.security.authz.AuthorizationEngine.RequestInfo;
 import org.elasticsearch.xpack.core.security.authz.accesscontrol.IndicesAccessControl;
+import org.elasticsearch.xpack.core.security.authz.permission.Role;
+import org.elasticsearch.xpack.security.authz.RBACEngine;
 
 import java.util.HashMap;
 import java.util.Map;
 
-import static org.elasticsearch.xpack.core.security.SecurityField.DOCUMENT_LEVEL_SECURITY_FEATURE;
-import static org.elasticsearch.xpack.core.security.SecurityField.FIELD_LEVEL_SECURITY_FEATURE;
 import static org.elasticsearch.xpack.core.security.authz.AuthorizationServiceField.INDICES_PERMISSIONS_VALUE;
 
 /**
@@ -33,12 +32,10 @@ import static org.elasticsearch.xpack.core.security.authz.AuthorizationServiceFi
 abstract class FieldAndDocumentLevelSecurityRequestInterceptor implements RequestInterceptor {
 
     private final ThreadContext threadContext;
-    private final XPackLicenseState licenseState;
     private final Logger logger;
 
-    FieldAndDocumentLevelSecurityRequestInterceptor(ThreadContext threadContext, XPackLicenseState licenseState) {
+    FieldAndDocumentLevelSecurityRequestInterceptor(ThreadContext threadContext) {
         this.threadContext = threadContext;
-        this.licenseState = licenseState;
         this.logger = LogManager.getLogger(getClass());
     }
 
@@ -48,12 +45,11 @@ abstract class FieldAndDocumentLevelSecurityRequestInterceptor implements Reques
         AuthorizationEngine authorizationEngine,
         AuthorizationInfo authorizationInfo
     ) {
-        final boolean isDlsLicensed = DOCUMENT_LEVEL_SECURITY_FEATURE.checkWithoutTracking(licenseState);
-        final boolean isFlsLicensed = FIELD_LEVEL_SECURITY_FEATURE.checkWithoutTracking(licenseState);
+        final Role role = RBACEngine.maybeGetRBACEngineRole(authorizationInfo);
         if (requestInfo.getRequest() instanceof IndicesRequest indicesRequest
             && false == TransportActionProxy.isProxyAction(requestInfo.getAction())
             && supports(indicesRequest)
-            && (isDlsLicensed || isFlsLicensed)) {
+            && (role == null || role.hasFieldOrDocumentLevelSecurity())) {
             final IndicesAccessControl indicesAccessControl = INDICES_PERMISSIONS_VALUE.get(threadContext);
             final Map<String, IndicesAccessControl.IndexAccessControl> accessControlByIndex = new HashMap<>();
             for (String index : requestIndices(indicesRequest)) {
