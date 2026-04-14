@@ -103,4 +103,47 @@ public class DlsFlsRequestCacheDifferentiatorTests extends ESTestCase {
         assertThat(out.position(), equalTo(0L));
     }
 
+    public void testWillWriteCacheKeyForImplicitDlsWithoutPlatinumLicense() throws IOException {
+        when(licenseState.isAllowed(DOCUMENT_LEVEL_SECURITY_FEATURE)).thenReturn(false);
+
+        String implicitDlsIndex = "implicit-dls-" + randomAlphaOfLengthBetween(3, 8);
+        ThreadContext implicitThreadContext = new ThreadContext(Settings.EMPTY);
+        SecurityContext implicitSecurityContext = new SecurityContext(Settings.EMPTY, implicitThreadContext);
+        DlsFlsRequestCacheDifferentiator implicitDifferentiator = new DlsFlsRequestCacheDifferentiator(
+            licenseState,
+            new SetOnce<>(implicitSecurityContext),
+            new SetOnce<>(mock(ScriptService.class))
+        );
+        implicitSecurityContext.putIndicesAccessControl(
+            new IndicesAccessControl(
+                true,
+                Map.of(
+                    implicitDlsIndex,
+                    new IndicesAccessControl.IndexAccessControl(
+                        FieldPermissions.DEFAULT,
+                        DocumentPermissions.filteredBy(Set.of(new BytesArray("""
+                            {"term":{"kibana.space_ids":"default"}}"""))),
+                        true
+                    )
+                )
+            )
+        );
+
+        when(shardSearchRequest.shardId()).thenReturn(
+            new ShardId(implicitDlsIndex, randomAlphaOfLength(10), randomIntBetween(0, 3))
+        );
+        implicitDifferentiator.accept(shardSearchRequest, out);
+        assertThat(out.position(), greaterThan(0L));
+    }
+
+    public void testWillDoNothingForExplicitDlsWithoutPlatinumLicense() throws IOException {
+        when(licenseState.isAllowed(DOCUMENT_LEVEL_SECURITY_FEATURE)).thenReturn(false);
+
+        when(shardSearchRequest.shardId()).thenReturn(
+            new ShardId(dlsIndexName, randomAlphaOfLength(10), randomIntBetween(0, 3))
+        );
+        differentiator.accept(shardSearchRequest, out);
+        assertThat(out.position(), equalTo(0L));
+    }
+
 }
