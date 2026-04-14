@@ -684,6 +684,57 @@ public class KibanaAlertsImplicitRolesIT extends SecuritySingleNodeTestCase {
     }
 
     /**
+     * The Get Roles API with {@code include_implicit=true} must return the implicit {@code .alerts-*}
+     * index privileges alongside the explicitly configured application privileges. Each implicit entry
+     * must carry the {@code implicitly_granted} flag and, for space-scoped resources, a DLS query.
+     */
+    public void testGetRolesApiWithIncludeImplicitReturnsImplicitPrivileges() {
+        GetRolesResponse rolesResp = new GetRolesRequestBuilder(client()).names(ALERTS_ROLE).includeImplicit(true).get();
+
+        assertTrue("Role should exist", rolesResp.hasRoles());
+        RoleDescriptor descriptor = rolesResp.roles()[0];
+        assertThat("Role name should match", descriptor.getName(), equalTo(ALERTS_ROLE));
+
+        // Application privileges must be preserved
+        assertThat(
+            "Application privileges should still be present",
+            descriptor.getApplicationPrivileges().length,
+            equalTo(1)
+        );
+        assertThat(descriptor.getApplicationPrivileges()[0].getApplication(), equalTo("kibana-.kibana"));
+
+        // Implicit index privileges should now appear
+        RoleDescriptor.IndicesPrivileges[] indicesPrivileges = descriptor.getIndicesPrivileges();
+        assertTrue("Should have at least one implicit index privilege", indicesPrivileges.length > 0);
+
+        boolean foundImplicitAlerts = false;
+        for (RoleDescriptor.IndicesPrivileges priv : indicesPrivileges) {
+            if (priv.isImplicitlyGranted() && Arrays.asList(priv.getIndices()).contains(".alerts-*")) {
+                foundImplicitAlerts = true;
+                assertThat(
+                    "Implicit .alerts-* privilege should grant read",
+                    Arrays.asList(priv.getPrivileges()),
+                    org.hamcrest.Matchers.hasItem("read")
+                );
+                assertThat("Implicit privilege should carry a DLS query for space filtering", priv.getQuery(), org.hamcrest.Matchers.notNullValue());
+                assertThat(
+                    "DLS query should filter on space:default",
+                    priv.getQuery().utf8ToString(),
+                    org.hamcrest.Matchers.containsString("default")
+                );
+            }
+        }
+        assertTrue("Get Roles API with include_implicit should include .alerts-* with implicitly_granted flag", foundImplicitAlerts);
+
+        // Without include_implicit, the same role should have no index privileges
+        GetRolesResponse defaultResp = new GetRolesRequestBuilder(client()).names(ALERTS_ROLE).get();
+        assertTrue("Role should exist", defaultResp.hasRoles());
+        RoleDescriptor defaultDescriptor = defaultResp.roles()[0];
+        assertThat(defaultDescriptor.getIndicesPrivileges().length, equalTo(0));
+        assertThat("Application privileges should still be present", defaultDescriptor.getApplicationPrivileges().length, equalTo(1));
+    }
+
+    /**
      * Req 4: The Has Privileges API must reflect that the user has implicit read access to
      * {@code .alerts-*} indices when that access is derived from application privileges.
      */

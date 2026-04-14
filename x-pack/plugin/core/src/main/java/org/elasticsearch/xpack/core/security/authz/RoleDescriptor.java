@@ -1331,6 +1331,9 @@ public class RoleDescriptor implements ToXContentObject, Writeable {
         // users. Setting this flag eliminates this special status, and any index name pattern in the permission will cover restricted
         // indices as well.
         private boolean allowRestrictedIndices = false;
+        // Display-only flag indicating this privilege was implicitly derived (e.g. from application privileges).
+        // Not included in Writeable serialization, equals, hashCode, or compareTo.
+        private boolean implicitlyGranted = false;
 
         private IndicesPrivileges() {}
 
@@ -1394,6 +1397,10 @@ public class RoleDescriptor implements ToXContentObject, Writeable {
 
         public boolean allowRestrictedIndices() {
             return allowRestrictedIndices;
+        }
+
+        public boolean isImplicitlyGranted() {
+            return implicitlyGranted;
         }
 
         public boolean hasDeniedFields() {
@@ -1497,7 +1504,11 @@ public class RoleDescriptor implements ToXContentObject, Writeable {
             if (query != null) {
                 builder.field("query", query.utf8ToString());
             }
-            return builder.field(RoleDescriptor.Fields.ALLOW_RESTRICTED_INDICES.getPreferredName(), allowRestrictedIndices);
+            builder.field(RoleDescriptor.Fields.ALLOW_RESTRICTED_INDICES.getPreferredName(), allowRestrictedIndices);
+            if (implicitlyGranted) {
+                builder.field(RoleDescriptor.Fields.IMPLICITLY_GRANTED.getPreferredName(), true);
+            }
+            return builder;
         }
 
         public static void write(StreamOutput out, IndicesPrivileges privileges) throws IOException {
@@ -1573,6 +1584,11 @@ public class RoleDescriptor implements ToXContentObject, Writeable {
 
             public Builder allowRestrictedIndices(boolean allow) {
                 indicesPrivileges.allowRestrictedIndices = allow;
+                return this;
+            }
+
+            public Builder implicitlyGranted(boolean implicitlyGranted) {
+                indicesPrivileges.implicitlyGranted = implicitlyGranted;
                 return this;
             }
 

@@ -75,6 +75,33 @@ public class RoleDescriptorTests extends ESTestCase {
         assertEquals("{\"names\":[\"idx\"],\"privileges\":[\"priv\"],\"allow_restricted_indices\":true}", Strings.toString(b));
     }
 
+    public void testIndexGroupImplicitlyGranted() throws Exception {
+        RoleDescriptor.IndicesPrivileges privs = RoleDescriptor.IndicesPrivileges.builder()
+            .indices(".alerts-*")
+            .privileges("read")
+            .implicitlyGranted(true)
+            .build();
+        XContentBuilder b = jsonBuilder();
+        privs.toXContent(b, ToXContent.EMPTY_PARAMS);
+        assertEquals(
+            "{\"names\":[\".alerts-*\"],\"privileges\":[\"read\"],\"allow_restricted_indices\":false,\"implicitly_granted\":true}",
+            Strings.toString(b)
+        );
+        assertTrue(privs.isImplicitlyGranted());
+    }
+
+    public void testIndexGroupImplicitlyGrantedNotEmittedWhenFalse() throws Exception {
+        RoleDescriptor.IndicesPrivileges privs = RoleDescriptor.IndicesPrivileges.builder()
+            .indices("idx")
+            .privileges("priv")
+            .build();
+        XContentBuilder b = jsonBuilder();
+        privs.toXContent(b, ToXContent.EMPTY_PARAMS);
+        String json = Strings.toString(b);
+        assertFalse(json.contains("implicitly_granted"));
+        assertFalse(privs.isImplicitlyGranted());
+    }
+
     public void testRemoteIndexGroup() throws Exception {
         RoleDescriptor.RemoteIndicesPrivileges privs = RoleDescriptor.RemoteIndicesPrivileges.builder("remote")
             .indices("idx")

@@ -25,6 +25,8 @@ public class GetRolesRequest extends LegacyActionRequest {
 
     private boolean nativeOnly = false;
 
+    private boolean includeImplicit = false;
+
     public GetRolesRequest() {}
 
     @Override
@@ -50,6 +52,14 @@ public class GetRolesRequest extends LegacyActionRequest {
 
     public boolean nativeOnly() {
         return this.nativeOnly;
+    }
+
+    public void includeImplicit(boolean includeImplicit) {
+        this.includeImplicit = includeImplicit;
+    }
+
+    public boolean includeImplicit() {
+        return this.includeImplicit;
     }
 
     @Override

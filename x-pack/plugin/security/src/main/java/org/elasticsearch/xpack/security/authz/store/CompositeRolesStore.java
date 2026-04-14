@@ -67,6 +67,7 @@ import org.elasticsearch.xpack.security.support.SecurityIndexManager;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -691,6 +692,64 @@ public class CompositeRolesStore {
                 );
             }
         }
+    }
+
+    /**
+     * Resolves implicit index privileges for each role descriptor by fetching stored application privileges
+     * and invoking each registered {@link ImplicitPrivilegesProvider}.
+     *
+     * @param roleDescriptors the role descriptors to resolve implicit privileges for
+     * @param listener receives a map from role name to the list of implicit {@link IndicesPrivileges}
+     */
+    public void resolveImplicitPrivileges(
+        Collection<RoleDescriptor> roleDescriptors,
+        ActionListener<Map<String, Collection<IndicesPrivileges>>> listener
+    ) {
+        if (implicitPrivilegesProviders.isEmpty()) {
+            listener.onResponse(Map.of());
+            return;
+        }
+
+        // Collect all application names and privilege names across all role descriptors
+        final Set<String> applicationNames = new HashSet<>();
+        final Set<String> privilegeNames = new HashSet<>();
+        for (RoleDescriptor rd : roleDescriptors) {
+            for (RoleDescriptor.ApplicationResourcePrivileges appPriv : rd.getApplicationPrivileges()) {
+                applicationNames.add(appPriv.getApplication());
+                Collections.addAll(privilegeNames, appPriv.getPrivileges());
+            }
+        }
+
+        if (applicationNames.isEmpty()) {
+            listener.onResponse(Map.of());
+            return;
+        }
+
+        privilegeStore.getPrivileges(applicationNames, privilegeNames, listener.delegateFailureAndWrap((delegate, storedPrivileges) -> {
+            Map<String, Collection<IndicesPrivileges>> result = new HashMap<>();
+            for (RoleDescriptor rd : roleDescriptors) {
+                List<IndicesPrivileges> implicitPrivileges = new ArrayList<>();
+                for (ImplicitPrivilegesProvider provider : implicitPrivilegesProviders) {
+                    Collection<IndicesPrivileges> providerResult = provider.getImplicitIndicesPrivileges(
+                        List.of(rd),
+                        storedPrivileges
+                    );
+                    for (IndicesPrivileges privilege : providerResult) {
+                        if (dlsFlsEnabled == false
+                            && (privilege.getQuery() != null
+                                || privilege.getGrantedFields() != null
+                                || privilege.getDeniedFields() != null)) {
+                            continue;
+                        }
+                        implicitPrivileges.add(privilege);
+                    }
+                }
+                if (implicitPrivileges.isEmpty() == false) {
+                    result.put(rd.getName(), implicitPrivileges);
+                }
+            }
+            delegate.onResponse(result);
+        }));
     }
 
     public void invalidateProject() {
