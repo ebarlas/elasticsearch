@@ -670,28 +670,84 @@ public class CompositeRolesStore {
         boolean dlsFlsEnabled,
         Role.Builder builder
     ) {
-        for (ImplicitPrivilegesProvider provider : providers) {
-            Collection<IndicesPrivileges> implicitPrivileges = provider.getImplicitIndicesPrivileges(roleDescriptors, storedPrivileges);
-            for (IndicesPrivileges privilege : implicitPrivileges) {
-                if (dlsFlsEnabled == false
-                    && (privilege.getQuery() != null || privilege.getGrantedFields() != null || privilege.getDeniedFields() != null)) {
-                    logger.debug(
-                        "suppressing implicit privilege for indices {} because xpack.security.dls_fls.enabled is false",
-                        (Object) privilege.getIndices()
-                    );
-                    continue;
-                }
-                builder.addImplicit(
-                    fieldPermissionsCache.getFieldPermissions(
-                        new FieldPermissionsDefinition(privilege.getGrantedFields(), privilege.getDeniedFields())
-                    ),
-                    privilege.getQuery() == null ? null : newHashSet(privilege.getQuery()),
-                    IndexPrivilege.resolveBySelectorAccess(newHashSet(Objects.requireNonNull(privilege.getPrivileges()))),
-                    privilege.allowRestrictedIndices(),
-                    privilege.getIndices()
+        final Map<Set<String>, MergeableIndicesPrivilege> implicitPrivilegesMap = new HashMap<>();
+        final Map<Set<String>, MergeableIndicesPrivilege> restrictedImplicitPrivilegesMap = new HashMap<>();
+        for (RoleDescriptor roleDescriptor : roleDescriptors) {
+            Collection<ApplicationPrivilegeDescriptor> roleStoredPrivileges = storedPrivilegesForRole(
+                roleDescriptor,
+                storedPrivileges
+            );
+            for (ImplicitPrivilegesProvider provider : providers) {
+                Collection<IndicesPrivileges> implicitPrivileges = provider.getImplicitIndicesPrivileges(
+                    roleDescriptor,
+                    roleStoredPrivileges
                 );
+                for (IndicesPrivileges privilege : implicitPrivileges) {
+                    if (dlsFlsEnabled == false
+                        && (privilege.getQuery() != null || privilege.getGrantedFields() != null || privilege.getDeniedFields() != null)) {
+                        logger.debug(
+                            "suppressing implicit privilege for indices {} because xpack.security.dls_fls.enabled is false",
+                            (Object) privilege.getIndices()
+                        );
+                        continue;
+                    }
+                    MergeableIndicesPrivilege.collatePrivilegesByIndices(
+                        privilege,
+                        false,
+                        implicitPrivilegesMap
+                    );
+                    MergeableIndicesPrivilege.collatePrivilegesByIndices(
+                        privilege,
+                        true,
+                        restrictedImplicitPrivilegesMap
+                    );
+                }
             }
         }
+        implicitPrivilegesMap.forEach(
+            (key, privilege) -> builder.addImplicit(
+                fieldPermissionsCache.getFieldPermissions(privilege.fieldPermissionsDefinition),
+                privilege.query,
+                IndexPrivilege.resolveBySelectorAccess(privilege.privileges),
+                false,
+                privilege.indices.toArray(Strings.EMPTY_ARRAY)
+            )
+        );
+        restrictedImplicitPrivilegesMap.forEach(
+            (key, privilege) -> builder.addImplicit(
+                fieldPermissionsCache.getFieldPermissions(privilege.fieldPermissionsDefinition),
+                privilege.query,
+                IndexPrivilege.resolveBySelectorAccess(privilege.privileges),
+                true,
+                privilege.indices.toArray(Strings.EMPTY_ARRAY)
+            )
+        );
+    }
+
+    /**
+     * Filters stored application privilege descriptors to only those referenced by the given role descriptor.
+     */
+    private static Collection<ApplicationPrivilegeDescriptor> storedPrivilegesForRole(
+        RoleDescriptor roleDescriptor,
+        Collection<ApplicationPrivilegeDescriptor> storedPrivileges
+    ) {
+        if (storedPrivileges.isEmpty()) {
+            return storedPrivileges;
+        }
+        Map<String, Set<String>> privilegeNamesByApp = new HashMap<>();
+        for (RoleDescriptor.ApplicationResourcePrivileges appPriv : roleDescriptor.getApplicationPrivileges()) {
+            Collections.addAll(
+                privilegeNamesByApp.computeIfAbsent(appPriv.getApplication(), k -> new HashSet<>()),
+                appPriv.getPrivileges()
+            );
+        }
+        if (privilegeNamesByApp.isEmpty()) {
+            return List.of();
+        }
+        return storedPrivileges.stream().filter(d -> {
+            Set<String> names = privilegeNamesByApp.get(d.getApplication());
+            return names != null && names.contains(d.getName());
+        }).toList();
     }
 
     /**
@@ -728,11 +784,15 @@ public class CompositeRolesStore {
         privilegeStore.getPrivileges(applicationNames, privilegeNames, listener.delegateFailureAndWrap((delegate, storedPrivileges) -> {
             Map<String, Collection<IndicesPrivileges>> result = new HashMap<>();
             for (RoleDescriptor rd : roleDescriptors) {
+                Collection<ApplicationPrivilegeDescriptor> roleStoredPrivileges = storedPrivilegesForRole(
+                    rd,
+                    storedPrivileges
+                );
                 List<IndicesPrivileges> implicitPrivileges = new ArrayList<>();
                 for (ImplicitPrivilegesProvider provider : implicitPrivilegesProviders) {
                     Collection<IndicesPrivileges> providerResult = provider.getImplicitIndicesPrivileges(
-                        List.of(rd),
-                        storedPrivileges
+                        rd,
+                        roleStoredPrivileges
                     );
                     for (IndicesPrivileges privilege : providerResult) {
                         if (dlsFlsEnabled == false
@@ -906,30 +966,47 @@ public class CompositeRolesStore {
                 if (indicesPrivilege.allowRestrictedIndices() != allowsRestrictedIndices) {
                     continue;
                 }
-                final Set<String> key = newHashSet(indicesPrivilege.getIndices());
-                indicesPrivilegesMap.compute(key, (k, value) -> {
-                    if (value == null) {
-                        return new MergeableIndicesPrivilege(
+                collatePrivilegeByIndices(indicesPrivilege, indicesPrivilegesMap);
+            }
+        }
+
+        private static void collatePrivilegesByIndices(
+            final IndicesPrivileges indicesPrivilege,
+            final boolean allowsRestrictedIndices,
+            final Map<Set<String>, MergeableIndicesPrivilege> indicesPrivilegesMap
+        ) {
+            if (indicesPrivilege.allowRestrictedIndices() == allowsRestrictedIndices) {
+                collatePrivilegeByIndices(indicesPrivilege, indicesPrivilegesMap);
+            }
+        }
+
+        private static void collatePrivilegeByIndices(
+            final IndicesPrivileges indicesPrivilege,
+            final Map<Set<String>, MergeableIndicesPrivilege> indicesPrivilegesMap
+        ) {
+            final Set<String> key = newHashSet(indicesPrivilege.getIndices());
+            indicesPrivilegesMap.compute(key, (k, value) -> {
+                if (value == null) {
+                    return new MergeableIndicesPrivilege(
+                        indicesPrivilege.getIndices(),
+                        indicesPrivilege.getPrivileges(),
+                        indicesPrivilege.getGrantedFields(),
+                        indicesPrivilege.getDeniedFields(),
+                        indicesPrivilege.getQuery()
+                    );
+                } else {
+                    value.merge(
+                        new MergeableIndicesPrivilege(
                             indicesPrivilege.getIndices(),
                             indicesPrivilege.getPrivileges(),
                             indicesPrivilege.getGrantedFields(),
                             indicesPrivilege.getDeniedFields(),
                             indicesPrivilege.getQuery()
-                        );
-                    } else {
-                        value.merge(
-                            new MergeableIndicesPrivilege(
-                                indicesPrivilege.getIndices(),
-                                indicesPrivilege.getPrivileges(),
-                                indicesPrivilege.getGrantedFields(),
-                                indicesPrivilege.getDeniedFields(),
-                                indicesPrivilege.getQuery()
-                            )
-                        );
-                        return value;
-                    }
-                });
-            }
+                        )
+                    );
+                    return value;
+                }
+            });
         }
     }
 

@@ -31,25 +31,23 @@ public class KibanaAlertsImplicitRolesTests extends ESTestCase {
         Collection<ApplicationPrivilegeDescriptor> storedPrivileges = List.of(
             new ApplicationPrivilegeDescriptor("kibana-.kibana", "feature_alerting_read", Set.of("alerts:read"), Map.of())
         );
-        Collection<RoleDescriptor> roleDescriptors = List.of(
-            new RoleDescriptor(
-                "test_role",
-                null,
-                null,
-                new RoleDescriptor.ApplicationResourcePrivileges[] {
-                    RoleDescriptor.ApplicationResourcePrivileges.builder()
-                        .application("kibana-.kibana")
-                        .privileges("feature_alerting_read")
-                        .resources("space:default")
-                        .build() },
-                null,
-                null,
-                null,
-                null
-            )
+        RoleDescriptor roleDescriptor = new RoleDescriptor(
+            "test_role",
+            null,
+            null,
+            new RoleDescriptor.ApplicationResourcePrivileges[] {
+                RoleDescriptor.ApplicationResourcePrivileges.builder()
+                    .application("kibana-.kibana")
+                    .privileges("feature_alerting_read")
+                    .resources("space:default")
+                    .build() },
+            null,
+            null,
+            null,
+            null
         );
 
-        Collection<RoleDescriptor.IndicesPrivileges> result = contributor.getImplicitIndicesPrivileges(roleDescriptors, storedPrivileges);
+        Collection<RoleDescriptor.IndicesPrivileges> result = contributor.getImplicitIndicesPrivileges(roleDescriptor, storedPrivileges);
 
         assertThat(result, hasSize(1));
         RoleDescriptor.IndicesPrivileges privilege = result.iterator().next();
@@ -61,44 +59,27 @@ public class KibanaAlertsImplicitRolesTests extends ESTestCase {
         assertTrue(query.contains("default"));
     }
 
-    public void testMultipleSpacesAcrossRolesAreMerged() {
+    public void testMultipleSpacesInSingleRoleAreMerged() {
         Collection<ApplicationPrivilegeDescriptor> storedPrivileges = List.of(
             new ApplicationPrivilegeDescriptor("kibana-.kibana", "alerting_read", Set.of("alerts:read"), Map.of())
         );
-        Collection<RoleDescriptor> roleDescriptors = List.of(
-            new RoleDescriptor(
-                "role_1",
-                null,
-                null,
-                new RoleDescriptor.ApplicationResourcePrivileges[] {
-                    RoleDescriptor.ApplicationResourcePrivileges.builder()
-                        .application("kibana-.kibana")
-                        .privileges("alerting_read")
-                        .resources("space:foo", "space:bar")
-                        .build() },
-                null,
-                null,
-                null,
-                null
-            ),
-            new RoleDescriptor(
-                "role_2",
-                null,
-                null,
-                new RoleDescriptor.ApplicationResourcePrivileges[] {
-                    RoleDescriptor.ApplicationResourcePrivileges.builder()
-                        .application("kibana-.kibana")
-                        .privileges("alerting_read")
-                        .resources("space:baz")
-                        .build() },
-                null,
-                null,
-                null,
-                null
-            )
+        RoleDescriptor roleDescriptor = new RoleDescriptor(
+            "role_1",
+            null,
+            null,
+            new RoleDescriptor.ApplicationResourcePrivileges[] {
+                RoleDescriptor.ApplicationResourcePrivileges.builder()
+                    .application("kibana-.kibana")
+                    .privileges("alerting_read")
+                    .resources("space:foo", "space:bar", "space:baz")
+                    .build() },
+            null,
+            null,
+            null,
+            null
         );
 
-        Collection<RoleDescriptor.IndicesPrivileges> result = contributor.getImplicitIndicesPrivileges(roleDescriptors, storedPrivileges);
+        Collection<RoleDescriptor.IndicesPrivileges> result = contributor.getImplicitIndicesPrivileges(roleDescriptor, storedPrivileges);
 
         assertThat(result, hasSize(1));
         RoleDescriptor.IndicesPrivileges privilege = result.iterator().next();
@@ -113,25 +94,23 @@ public class KibanaAlertsImplicitRolesTests extends ESTestCase {
         Collection<ApplicationPrivilegeDescriptor> storedPrivileges = List.of(
             new ApplicationPrivilegeDescriptor("kibana-.kibana", "alerting_read", Set.of("alerts:read"), Map.of())
         );
-        Collection<RoleDescriptor> roleDescriptors = List.of(
-            new RoleDescriptor(
-                "test_role",
-                null,
-                null,
-                new RoleDescriptor.ApplicationResourcePrivileges[] {
-                    RoleDescriptor.ApplicationResourcePrivileges.builder()
-                        .application("kibana-.kibana")
-                        .privileges("alerting_read")
-                        .resources("*")
-                        .build() },
-                null,
-                null,
-                null,
-                null
-            )
+        RoleDescriptor roleDescriptor = new RoleDescriptor(
+            "test_role",
+            null,
+            null,
+            new RoleDescriptor.ApplicationResourcePrivileges[] {
+                RoleDescriptor.ApplicationResourcePrivileges.builder()
+                    .application("kibana-.kibana")
+                    .privileges("alerting_read")
+                    .resources("*")
+                    .build() },
+            null,
+            null,
+            null,
+            null
         );
 
-        Collection<RoleDescriptor.IndicesPrivileges> result = contributor.getImplicitIndicesPrivileges(roleDescriptors, storedPrivileges);
+        Collection<RoleDescriptor.IndicesPrivileges> result = contributor.getImplicitIndicesPrivileges(roleDescriptor, storedPrivileges);
 
         assertThat(result, hasSize(1));
         RoleDescriptor.IndicesPrivileges privilege = result.iterator().next();
@@ -144,40 +123,23 @@ public class KibanaAlertsImplicitRolesTests extends ESTestCase {
         Collection<ApplicationPrivilegeDescriptor> storedPrivileges = List.of(
             new ApplicationPrivilegeDescriptor("kibana-.kibana", "alerting_read", Set.of("alerts:read"), Map.of())
         );
-        Collection<RoleDescriptor> roleDescriptors = List.of(
-            new RoleDescriptor(
-                "role_1",
-                null,
-                null,
-                new RoleDescriptor.ApplicationResourcePrivileges[] {
-                    RoleDescriptor.ApplicationResourcePrivileges.builder()
-                        .application("kibana-.kibana")
-                        .privileges("alerting_read")
-                        .resources("*")
-                        .build() },
-                null,
-                null,
-                null,
-                null
-            ),
-            new RoleDescriptor(
-                "role_2",
-                null,
-                null,
-                new RoleDescriptor.ApplicationResourcePrivileges[] {
-                    RoleDescriptor.ApplicationResourcePrivileges.builder()
-                        .application("kibana-.kibana")
-                        .privileges("alerting_read")
-                        .resources("space:foo")
-                        .build() },
-                null,
-                null,
-                null,
-                null
-            )
+        RoleDescriptor roleDescriptor = new RoleDescriptor(
+            "test_role",
+            null,
+            null,
+            new RoleDescriptor.ApplicationResourcePrivileges[] {
+                RoleDescriptor.ApplicationResourcePrivileges.builder()
+                    .application("kibana-.kibana")
+                    .privileges("alerting_read")
+                    .resources("*", "space:foo")
+                    .build() },
+            null,
+            null,
+            null,
+            null
         );
 
-        Collection<RoleDescriptor.IndicesPrivileges> result = contributor.getImplicitIndicesPrivileges(roleDescriptors, storedPrivileges);
+        Collection<RoleDescriptor.IndicesPrivileges> result = contributor.getImplicitIndicesPrivileges(roleDescriptor, storedPrivileges);
 
         assertThat(result, hasSize(1));
         assertThat(result.iterator().next().getQuery(), is(nullValue()));
@@ -187,25 +149,23 @@ public class KibanaAlertsImplicitRolesTests extends ESTestCase {
         Collection<ApplicationPrivilegeDescriptor> storedPrivileges = List.of(
             new ApplicationPrivilegeDescriptor("other-app", "alerting_read", Set.of("alerts:read"), Map.of())
         );
-        Collection<RoleDescriptor> roleDescriptors = List.of(
-            new RoleDescriptor(
-                "test_role",
-                null,
-                null,
-                new RoleDescriptor.ApplicationResourcePrivileges[] {
-                    RoleDescriptor.ApplicationResourcePrivileges.builder()
-                        .application("other-app")
-                        .privileges("alerting_read")
-                        .resources("space:default")
-                        .build() },
-                null,
-                null,
-                null,
-                null
-            )
+        RoleDescriptor roleDescriptor = new RoleDescriptor(
+            "test_role",
+            null,
+            null,
+            new RoleDescriptor.ApplicationResourcePrivileges[] {
+                RoleDescriptor.ApplicationResourcePrivileges.builder()
+                    .application("other-app")
+                    .privileges("alerting_read")
+                    .resources("space:default")
+                    .build() },
+            null,
+            null,
+            null,
+            null
         );
 
-        Collection<RoleDescriptor.IndicesPrivileges> result = contributor.getImplicitIndicesPrivileges(roleDescriptors, storedPrivileges);
+        Collection<RoleDescriptor.IndicesPrivileges> result = contributor.getImplicitIndicesPrivileges(roleDescriptor, storedPrivileges);
 
         assertThat(result, is(empty()));
     }
@@ -214,25 +174,23 @@ public class KibanaAlertsImplicitRolesTests extends ESTestCase {
         Collection<ApplicationPrivilegeDescriptor> storedPrivileges = List.of(
             new ApplicationPrivilegeDescriptor("kibana-.kibana", "alerting_write", Set.of("alerts:write"), Map.of())
         );
-        Collection<RoleDescriptor> roleDescriptors = List.of(
-            new RoleDescriptor(
-                "test_role",
-                null,
-                null,
-                new RoleDescriptor.ApplicationResourcePrivileges[] {
-                    RoleDescriptor.ApplicationResourcePrivileges.builder()
-                        .application("kibana-.kibana")
-                        .privileges("alerting_write")
-                        .resources("space:default")
-                        .build() },
-                null,
-                null,
-                null,
-                null
-            )
+        RoleDescriptor roleDescriptor = new RoleDescriptor(
+            "test_role",
+            null,
+            null,
+            new RoleDescriptor.ApplicationResourcePrivileges[] {
+                RoleDescriptor.ApplicationResourcePrivileges.builder()
+                    .application("kibana-.kibana")
+                    .privileges("alerting_write")
+                    .resources("space:default")
+                    .build() },
+            null,
+            null,
+            null,
+            null
         );
 
-        Collection<RoleDescriptor.IndicesPrivileges> result = contributor.getImplicitIndicesPrivileges(roleDescriptors, storedPrivileges);
+        Collection<RoleDescriptor.IndicesPrivileges> result = contributor.getImplicitIndicesPrivileges(roleDescriptor, storedPrivileges);
 
         assertThat(result, is(empty()));
     }
@@ -241,59 +199,45 @@ public class KibanaAlertsImplicitRolesTests extends ESTestCase {
         Collection<ApplicationPrivilegeDescriptor> storedPrivileges = List.of(
             new ApplicationPrivilegeDescriptor("kibana-.kibana", "alerting_read", Set.of("alerts:read"), Map.of())
         );
-        Collection<RoleDescriptor> roleDescriptors = List.of(
-            new RoleDescriptor(
-                "test_role",
-                null,
-                null,
-                new RoleDescriptor.ApplicationResourcePrivileges[] {
-                    RoleDescriptor.ApplicationResourcePrivileges.builder()
-                        .application("kibana-.kibana")
-                        .privileges("alerting_read")
-                        .resources("no-prefix-resource")
-                        .build() },
-                null,
-                null,
-                null,
-                null
-            )
+        RoleDescriptor roleDescriptor = new RoleDescriptor(
+            "test_role",
+            null,
+            null,
+            new RoleDescriptor.ApplicationResourcePrivileges[] {
+                RoleDescriptor.ApplicationResourcePrivileges.builder()
+                    .application("kibana-.kibana")
+                    .privileges("alerting_read")
+                    .resources("no-prefix-resource")
+                    .build() },
+            null,
+            null,
+            null,
+            null
         );
 
-        Collection<RoleDescriptor.IndicesPrivileges> result = contributor.getImplicitIndicesPrivileges(roleDescriptors, storedPrivileges);
-
-        assertThat(result, is(empty()));
-    }
-
-    public void testEmptyRoleDescriptorsReturnsEmpty() {
-        Collection<ApplicationPrivilegeDescriptor> storedPrivileges = List.of(
-            new ApplicationPrivilegeDescriptor("kibana-.kibana", "alerting_read", Set.of("alerts:read"), Map.of())
-        );
-
-        Collection<RoleDescriptor.IndicesPrivileges> result = contributor.getImplicitIndicesPrivileges(List.of(), storedPrivileges);
+        Collection<RoleDescriptor.IndicesPrivileges> result = contributor.getImplicitIndicesPrivileges(roleDescriptor, storedPrivileges);
 
         assertThat(result, is(empty()));
     }
 
     public void testEmptyStoredPrivilegesReturnsEmpty() {
-        Collection<RoleDescriptor> roleDescriptors = List.of(
-            new RoleDescriptor(
-                "test_role",
-                null,
-                null,
-                new RoleDescriptor.ApplicationResourcePrivileges[] {
-                    RoleDescriptor.ApplicationResourcePrivileges.builder()
-                        .application("kibana-.kibana")
-                        .privileges("alerting_read")
-                        .resources("space:default")
-                        .build() },
-                null,
-                null,
-                null,
-                null
-            )
+        RoleDescriptor roleDescriptor = new RoleDescriptor(
+            "test_role",
+            null,
+            null,
+            new RoleDescriptor.ApplicationResourcePrivileges[] {
+                RoleDescriptor.ApplicationResourcePrivileges.builder()
+                    .application("kibana-.kibana")
+                    .privileges("alerting_read")
+                    .resources("space:default")
+                    .build() },
+            null,
+            null,
+            null,
+            null
         );
 
-        Collection<RoleDescriptor.IndicesPrivileges> result = contributor.getImplicitIndicesPrivileges(roleDescriptors, List.of());
+        Collection<RoleDescriptor.IndicesPrivileges> result = contributor.getImplicitIndicesPrivileges(roleDescriptor, List.of());
 
         assertThat(result, is(empty()));
     }
@@ -307,25 +251,23 @@ public class KibanaAlertsImplicitRolesTests extends ESTestCase {
                 Map.of()
             )
         );
-        Collection<RoleDescriptor> roleDescriptors = List.of(
-            new RoleDescriptor(
-                "test_role",
-                null,
-                null,
-                new RoleDescriptor.ApplicationResourcePrivileges[] {
-                    RoleDescriptor.ApplicationResourcePrivileges.builder()
-                        .application("kibana-.kibana")
-                        .privileges("feature_all")
-                        .resources("space:marketing")
-                        .build() },
-                null,
-                null,
-                null,
-                null
-            )
+        RoleDescriptor roleDescriptor = new RoleDescriptor(
+            "test_role",
+            null,
+            null,
+            new RoleDescriptor.ApplicationResourcePrivileges[] {
+                RoleDescriptor.ApplicationResourcePrivileges.builder()
+                    .application("kibana-.kibana")
+                    .privileges("feature_all")
+                    .resources("space:marketing")
+                    .build() },
+            null,
+            null,
+            null,
+            null
         );
 
-        Collection<RoleDescriptor.IndicesPrivileges> result = contributor.getImplicitIndicesPrivileges(roleDescriptors, storedPrivileges);
+        Collection<RoleDescriptor.IndicesPrivileges> result = contributor.getImplicitIndicesPrivileges(roleDescriptor, storedPrivileges);
 
         assertThat(result, hasSize(1));
         RoleDescriptor.IndicesPrivileges privilege = result.iterator().next();

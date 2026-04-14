@@ -4366,14 +4366,14 @@ public class CompositeRolesStoreTests extends ESTestCase {
     }
 
     public void testImplicitDlsPrivilegesSuppressedWhenDlsFlsDisabled() {
-        ImplicitPrivilegesProvider dlsProvider = (roleDescriptors, storedPrivileges) -> List.of(
+        ImplicitPrivilegesProvider dlsProvider = (roleDescriptor, storedPrivileges) -> List.of(
             IndicesPrivileges.builder()
                 .indices(".alerts-*")
                 .privileges("read")
                 .query("{\"term\":{\"kibana.space_ids\":\"default\"}}")
                 .build()
         );
-        ImplicitPrivilegesProvider patternProvider = (roleDescriptors, storedPrivileges) -> List.of(
+        ImplicitPrivilegesProvider patternProvider = (roleDescriptor, storedPrivileges) -> List.of(
             IndicesPrivileges.builder().indices(".internal.cases*").privileges("read").build()
         );
 
@@ -4412,7 +4412,7 @@ public class CompositeRolesStoreTests extends ESTestCase {
     }
 
     public void testImplicitFlsPrivilegesSuppressedWhenDlsFlsDisabled() {
-        ImplicitPrivilegesProvider flsProvider = (roleDescriptors, storedPrivileges) -> List.of(
+        ImplicitPrivilegesProvider flsProvider = (roleDescriptor, storedPrivileges) -> List.of(
             IndicesPrivileges.builder().indices(".alerts-*").privileges("read").grantedFields("field1", "field2").build()
         );
 

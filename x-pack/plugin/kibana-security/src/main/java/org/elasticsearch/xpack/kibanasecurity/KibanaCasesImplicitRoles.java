@@ -43,7 +43,7 @@ public class KibanaCasesImplicitRoles implements ImplicitPrivilegesProvider {
 
     @Override
     public Collection<RoleDescriptor.IndicesPrivileges> getImplicitIndicesPrivileges(
-        Collection<RoleDescriptor> roleDescriptors,
+        RoleDescriptor roleDescriptor,
         Collection<ApplicationPrivilegeDescriptor> storedApplicationPrivileges
     ) {
         Set<String> matchingPrivilegeNames = storedApplicationPrivileges.stream()
@@ -55,8 +55,7 @@ public class KibanaCasesImplicitRoles implements ImplicitPrivilegesProvider {
             return List.of();
         }
 
-        Set<String> resources = roleDescriptors.stream()
-            .flatMap(rd -> Stream.of(rd.getApplicationPrivileges()))
+        Set<String> resources = Stream.of(roleDescriptor.getApplicationPrivileges())
             .filter(p -> KIBANA_APPLICATION.equals(p.getApplication()))
             .filter(p -> Stream.of(p.getPrivileges()).anyMatch(matchingPrivilegeNames::contains))
             .flatMap(p -> Stream.of(p.getResources()))

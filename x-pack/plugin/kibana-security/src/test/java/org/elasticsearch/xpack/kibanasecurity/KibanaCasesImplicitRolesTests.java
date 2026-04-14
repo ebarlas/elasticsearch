@@ -62,7 +62,7 @@ public class KibanaCasesImplicitRolesTests extends ESTestCase {
 
     public void testSpaceAndSolution() {
         var result = contributor.getImplicitIndicesPrivileges(
-            List.of(roleWithResources("feature_cases_read", "space:default", "solution:securitySolution")),
+            roleWithResources("feature_cases_read", "space:default", "solution:securitySolution"),
             STORED_PRIVILEGES
         );
 
@@ -75,7 +75,7 @@ public class KibanaCasesImplicitRolesTests extends ESTestCase {
 
     public void testSpaceOnlyGrantsAllSolutions() {
         var result = contributor.getImplicitIndicesPrivileges(
-            List.of(roleWithResources("feature_cases_read", "space:default")),
+            roleWithResources("feature_cases_read", "space:default"),
             STORED_PRIVILEGES
         );
 
@@ -85,7 +85,7 @@ public class KibanaCasesImplicitRolesTests extends ESTestCase {
 
     public void testWildcardGrantsEverything() {
         var result = contributor.getImplicitIndicesPrivileges(
-            List.of(roleWithResources("feature_cases_read", "*")),
+            roleWithResources("feature_cases_read", "*"),
             STORED_PRIVILEGES
         );
 
@@ -95,7 +95,7 @@ public class KibanaCasesImplicitRolesTests extends ESTestCase {
 
     public void testMultipleSpacesAndSolutions() {
         var result = contributor.getImplicitIndicesPrivileges(
-            List.of(roleWithResources("feature_cases_read", "space:foo", "space:bar", "solution:securitySolution", "solution:observability")),
+            roleWithResources("feature_cases_read", "space:foo", "space:bar", "solution:securitySolution", "solution:observability"),
             STORED_PRIVILEGES
         );
 
@@ -111,12 +111,9 @@ public class KibanaCasesImplicitRolesTests extends ESTestCase {
         );
     }
 
-    public void testSpacesMergedAcrossRoles() {
+    public void testMultipleSpacesMergedInSingleRole() {
         var result = contributor.getImplicitIndicesPrivileges(
-            List.of(
-                roleWithResources("feature_cases_read", "space:foo", "solution:securitySolution"),
-                roleWithResources("feature_cases_read", "space:bar", "solution:securitySolution")
-            ),
+            roleWithResources("feature_cases_read", "space:foo", "space:bar", "solution:securitySolution"),
             STORED_PRIVILEGES
         );
 
@@ -129,7 +126,7 @@ public class KibanaCasesImplicitRolesTests extends ESTestCase {
 
     public void testSolutionLowercased() {
         var result = contributor.getImplicitIndicesPrivileges(
-            List.of(roleWithResources("feature_cases_read", "space:default", "solution:SecuritySolution")),
+            roleWithResources("feature_cases_read", "space:default", "solution:SecuritySolution"),
             STORED_PRIVILEGES
         );
 
@@ -142,12 +139,12 @@ public class KibanaCasesImplicitRolesTests extends ESTestCase {
             new ApplicationPrivilegeDescriptor("other-app", "cases_read", Set.of("cases:read"), Map.of())
         );
         var result = contributor.getImplicitIndicesPrivileges(
-            List.of(new RoleDescriptor("r", null, null, new RoleDescriptor.ApplicationResourcePrivileges[] {
+            new RoleDescriptor("r", null, null, new RoleDescriptor.ApplicationResourcePrivileges[] {
                 RoleDescriptor.ApplicationResourcePrivileges.builder()
                     .application("other-app")
                     .privileges("cases_read")
                     .resources("space:default")
-                    .build() }, null, null, null, null)),
+                    .build() }, null, null, null, null),
             stored
         );
         assertThat(result, is(empty()));
@@ -158,18 +155,14 @@ public class KibanaCasesImplicitRolesTests extends ESTestCase {
             new ApplicationPrivilegeDescriptor("kibana-.kibana", "cases_write", Set.of("cases:write"), Map.of())
         );
         assertThat(
-            contributor.getImplicitIndicesPrivileges(List.of(roleWithResources("cases_write", "space:default")), stored),
+            contributor.getImplicitIndicesPrivileges(roleWithResources("cases_write", "space:default"), stored),
             is(empty())
         );
     }
 
-    public void testEmptyRoleDescriptorsReturnsEmpty() {
-        assertThat(contributor.getImplicitIndicesPrivileges(List.of(), STORED_PRIVILEGES), is(empty()));
-    }
-
     public void testEmptyStoredPrivilegesReturnsEmpty() {
         assertThat(
-            contributor.getImplicitIndicesPrivileges(List.of(roleWithResources("feature_cases_read", "space:default")), List.of()),
+            contributor.getImplicitIndicesPrivileges(roleWithResources("feature_cases_read", "space:default"), List.of()),
             is(empty())
         );
     }
@@ -177,7 +170,7 @@ public class KibanaCasesImplicitRolesTests extends ESTestCase {
     public void testResourcesWithoutPrefixAreIgnored() {
         assertThat(
             contributor.getImplicitIndicesPrivileges(
-                List.of(roleWithResources("feature_cases_read", "no-prefix")),
+                roleWithResources("feature_cases_read", "no-prefix"),
                 STORED_PRIVILEGES
             ),
             is(empty())
@@ -186,7 +179,7 @@ public class KibanaCasesImplicitRolesTests extends ESTestCase {
 
     public void testNoDlsOrFls() {
         var result = contributor.getImplicitIndicesPrivileges(
-            List.of(roleWithResources("feature_cases_read", "space:default", "solution:securitySolution")),
+            roleWithResources("feature_cases_read", "space:default", "solution:securitySolution"),
             STORED_PRIVILEGES
         );
         assertThat(result, hasSize(1));
