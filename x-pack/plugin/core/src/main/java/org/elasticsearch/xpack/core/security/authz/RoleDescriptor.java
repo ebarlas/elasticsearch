@@ -36,6 +36,7 @@ import org.elasticsearch.xpack.core.security.authz.permission.RemoteClusterPermi
 import org.elasticsearch.xpack.core.security.authz.permission.RemoteClusterPermissions;
 import org.elasticsearch.xpack.core.security.authz.privilege.ConfigurableClusterPrivilege;
 import org.elasticsearch.xpack.core.security.authz.privilege.ConfigurableClusterPrivileges;
+import org.elasticsearch.xpack.core.security.authz.store.UserMetadataContributor;
 import org.elasticsearch.xpack.core.security.support.Validation;
 import org.elasticsearch.xpack.core.security.xcontent.XContentUtils;
 
@@ -1334,6 +1335,14 @@ public class RoleDescriptor implements ToXContentObject, Writeable {
         // Display-only flag indicating this privilege was implicitly derived (e.g. from application privileges).
         // Not included in Writeable serialization, equals, hashCode, or compareTo.
         private boolean implicitlyGranted = false;
+        // In-memory-only direct reference to a UserMetadataContributor whose output should be
+        // merged into User.metadata() before this privilege's DLS template is evaluated. Set
+        // exclusively by ImplicitPrivilegesProvider implementations. Not serialized on the wire,
+        // not emitted in XContent, not parsed from JSON, not included in equals/hashCode/compareTo.
+        // Merging in CompositeRolesStore keys on the contributor's own .equals() contract:
+        // privileges whose contributors are .equals() collapse into a single bucket; unequal
+        // contributors fragment.
+        private UserMetadataContributor metadataContributor = null;
 
         private IndicesPrivileges() {}
 
@@ -1401,6 +1410,18 @@ public class RoleDescriptor implements ToXContentObject, Writeable {
 
         public boolean isImplicitlyGranted() {
             return implicitlyGranted;
+        }
+
+        /**
+         * Returns the {@link UserMetadataContributor} whose output should be merged into
+         * {@code User.metadata()} before this privilege's DLS template query is evaluated, or
+         * {@code null} if no contribution is required. This annotation is in-memory only -- it
+         * never crosses serialization boundaries (wire, XContent, security-index documents) and is
+         * not considered when comparing privileges for equality.
+         */
+        @Nullable
+        public UserMetadataContributor getMetadataContributor() {
+            return metadataContributor;
         }
 
         public boolean hasDeniedFields() {
@@ -1589,6 +1610,25 @@ public class RoleDescriptor implements ToXContentObject, Writeable {
 
             public Builder implicitlyGranted(boolean implicitlyGranted) {
                 indicesPrivileges.implicitlyGranted = implicitlyGranted;
+                return this;
+            }
+
+            /**
+             * Attaches a {@link UserMetadataContributor} to this privilege. Intended for use by
+             * {@code ImplicitPrivilegesProvider} implementations only -- the reference is not
+             * serialized on the wire, not emitted in XContent, and not parsed from JSON, so it
+             * cannot be set via the REST API or persisted in a native role document.
+             * <p>
+             * The {@code CompositeRolesStore} merge step uses the contributor's
+             * {@link Object#equals equals} contract to decide whether two otherwise identical
+             * {@code IndicesPrivileges} can be collapsed into a single permission group.
+             * Plugins that emit many privileges sharing one conceptual contributor should either
+             * hand the same instance to every call or implement {@code equals}/{@code hashCode}
+             * so that equivalent contributors compare equal; otherwise the permissions will
+             * fragment and per-shard cache keys will diverge unnecessarily.
+             */
+            public Builder metadataContributor(@Nullable UserMetadataContributor metadataContributor) {
+                indicesPrivileges.metadataContributor = metadataContributor;
                 return this;
             }
 

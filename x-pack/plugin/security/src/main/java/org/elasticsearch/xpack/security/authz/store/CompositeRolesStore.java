@@ -54,6 +54,7 @@ import org.elasticsearch.xpack.core.security.authz.store.RoleKey;
 import org.elasticsearch.xpack.core.security.authz.store.RoleReference;
 import org.elasticsearch.xpack.core.security.authz.store.RoleReferenceIntersection;
 import org.elasticsearch.xpack.core.security.authz.store.RolesRetrievalResult;
+import org.elasticsearch.xpack.core.security.authz.store.UserMetadataContributor;
 import org.elasticsearch.xpack.core.security.support.CacheIteratorHelper;
 import org.elasticsearch.xpack.core.security.user.AnonymousUser;
 import org.elasticsearch.xpack.core.security.user.InternalUser;
@@ -523,8 +524,8 @@ public class CompositeRolesStore {
         final List<ConfigurableClusterPrivilege> configurableClusterPrivileges = new ArrayList<>();
         final Set<String> runAs = new HashSet<>();
 
-        final Map<Set<String>, MergeableIndicesPrivilege> indicesPrivilegesMap = new HashMap<>();
-        final Map<Set<String>, MergeableIndicesPrivilege> restrictedIndicesPrivilegesMap = new HashMap<>();
+        final Map<MergeableIndicesPrivilege.CollateKey, MergeableIndicesPrivilege> indicesPrivilegesMap = new HashMap<>();
+        final Map<MergeableIndicesPrivilege.CollateKey, MergeableIndicesPrivilege> restrictedIndicesPrivilegesMap = new HashMap<>();
 
         final Map<Set<String>, Set<IndicesPrivileges>> remoteIndicesPrivilegesByCluster = new HashMap<>();
 
@@ -670,8 +671,8 @@ public class CompositeRolesStore {
         boolean dlsFlsEnabled,
         Role.Builder builder
     ) {
-        final Map<Set<String>, MergeableIndicesPrivilege> implicitPrivilegesMap = new HashMap<>();
-        final Map<Set<String>, MergeableIndicesPrivilege> restrictedImplicitPrivilegesMap = new HashMap<>();
+        final Map<MergeableIndicesPrivilege.CollateKey, MergeableIndicesPrivilege> implicitPrivilegesMap = new HashMap<>();
+        final Map<MergeableIndicesPrivilege.CollateKey, MergeableIndicesPrivilege> restrictedImplicitPrivilegesMap = new HashMap<>();
         for (RoleDescriptor roleDescriptor : roleDescriptors) {
             Collection<ApplicationPrivilegeDescriptor> roleStoredPrivileges = storedPrivilegesForRole(
                 roleDescriptor,
@@ -705,20 +706,22 @@ public class CompositeRolesStore {
             }
         }
         implicitPrivilegesMap.forEach(
-            (key, privilege) -> builder.addImplicit(
+            (key, privilege) -> builder.addImplicitWithContributor(
                 fieldPermissionsCache.getFieldPermissions(privilege.fieldPermissionsDefinition),
                 privilege.query,
                 IndexPrivilege.resolveBySelectorAccess(privilege.privileges),
                 false,
+                privilege.metadataContributor,
                 privilege.indices.toArray(Strings.EMPTY_ARRAY)
             )
         );
         restrictedImplicitPrivilegesMap.forEach(
-            (key, privilege) -> builder.addImplicit(
+            (key, privilege) -> builder.addImplicitWithContributor(
                 fieldPermissionsCache.getFieldPermissions(privilege.fieldPermissionsDefinition),
                 privilege.query,
                 IndexPrivilege.resolveBySelectorAccess(privilege.privileges),
                 true,
+                privilege.metadataContributor,
                 privilege.indices.toArray(Strings.EMPTY_ARRAY)
             )
         );
@@ -919,6 +922,13 @@ public class CompositeRolesStore {
         private final Set<String> privileges;
         private FieldPermissionsDefinition fieldPermissionsDefinition;
         private Set<BytesReference> query = null;
+        // In-memory direct reference propagated from RoleDescriptor.IndicesPrivileges through to
+        // the resulting Group. Privileges whose contributors are not equal are kept in separate
+        // CollateKey buckets, so every privilege merged into a given MergeableIndicesPrivilege
+        // carries a contributor that is .equals() to this one -- the field is invariant across
+        // the merge.
+        @Nullable
+        private final UserMetadataContributor metadataContributor;
 
         MergeableIndicesPrivilege(
             String[] indices,
@@ -927,16 +937,33 @@ public class CompositeRolesStore {
             @Nullable String[] deniedFields,
             @Nullable BytesReference query
         ) {
+            this(indices, privileges, grantedFields, deniedFields, query, null);
+        }
+
+        MergeableIndicesPrivilege(
+            String[] indices,
+            String[] privileges,
+            @Nullable String[] grantedFields,
+            @Nullable String[] deniedFields,
+            @Nullable BytesReference query,
+            @Nullable UserMetadataContributor metadataContributor
+        ) {
             this.indices = newHashSet(Objects.requireNonNull(indices));
             this.privileges = newHashSet(Objects.requireNonNull(privileges));
             this.fieldPermissionsDefinition = new FieldPermissionsDefinition(grantedFields, deniedFields);
             if (query != null) {
                 this.query = newHashSet(query);
             }
+            this.metadataContributor = metadataContributor;
         }
 
         void merge(MergeableIndicesPrivilege other) {
             assert indices.equals(other.indices) : "index names must be equivalent in order to merge";
+            assert Objects.equals(metadataContributor, other.metadataContributor)
+                : "metadata contributors must be equal in order to merge: "
+                    + metadataContributor
+                    + " vs "
+                    + other.metadataContributor;
             Set<FieldGrantExcludeGroup> groups = new HashSet<>();
             groups.addAll(this.fieldPermissionsDefinition.getFieldGrantExcludeGroups());
             groups.addAll(other.fieldPermissionsDefinition.getFieldGrantExcludeGroups());
@@ -950,10 +977,20 @@ public class CompositeRolesStore {
             }
         }
 
+        /**
+         * Composite key used when collating privileges. Two privileges with the same indices but
+         * unequal {@link UserMetadataContributor}s are kept as separate buckets so that each
+         * resulting Group carries its own contributor. The contributor's own {@code equals}
+         * contract drives the decision: contributors that claim equality are, by SPI contract,
+         * expected to produce the same metadata contribution and can therefore be safely
+         * collapsed into a single bucket.
+         */
+        private record CollateKey(Set<String> indices, @Nullable UserMetadataContributor metadataContributor) {}
+
         private static void collatePrivilegesByIndices(
             final IndicesPrivileges[] indicesPrivileges,
             final boolean allowsRestrictedIndices,
-            final Map<Set<String>, MergeableIndicesPrivilege> indicesPrivilegesMap
+            final Map<CollateKey, MergeableIndicesPrivilege> indicesPrivilegesMap
         ) {
             // if an index privilege is an explicit denial, then we treat it as non-existent since we skipped these in the past when
             // merging
@@ -973,7 +1010,7 @@ public class CompositeRolesStore {
         private static void collatePrivilegesByIndices(
             final IndicesPrivileges indicesPrivilege,
             final boolean allowsRestrictedIndices,
-            final Map<Set<String>, MergeableIndicesPrivilege> indicesPrivilegesMap
+            final Map<CollateKey, MergeableIndicesPrivilege> indicesPrivilegesMap
         ) {
             if (indicesPrivilege.allowRestrictedIndices() == allowsRestrictedIndices) {
                 collatePrivilegeByIndices(indicesPrivilege, indicesPrivilegesMap);
@@ -982,9 +1019,12 @@ public class CompositeRolesStore {
 
         private static void collatePrivilegeByIndices(
             final IndicesPrivileges indicesPrivilege,
-            final Map<Set<String>, MergeableIndicesPrivilege> indicesPrivilegesMap
+            final Map<CollateKey, MergeableIndicesPrivilege> indicesPrivilegesMap
         ) {
-            final Set<String> key = newHashSet(indicesPrivilege.getIndices());
+            final CollateKey key = new CollateKey(
+                newHashSet(indicesPrivilege.getIndices()),
+                indicesPrivilege.getMetadataContributor()
+            );
             indicesPrivilegesMap.compute(key, (k, value) -> {
                 if (value == null) {
                     return new MergeableIndicesPrivilege(
@@ -992,7 +1032,8 @@ public class CompositeRolesStore {
                         indicesPrivilege.getPrivileges(),
                         indicesPrivilege.getGrantedFields(),
                         indicesPrivilege.getDeniedFields(),
-                        indicesPrivilege.getQuery()
+                        indicesPrivilege.getQuery(),
+                        indicesPrivilege.getMetadataContributor()
                     );
                 } else {
                     value.merge(
@@ -1001,7 +1042,8 @@ public class CompositeRolesStore {
                             indicesPrivilege.getPrivileges(),
                             indicesPrivilege.getGrantedFields(),
                             indicesPrivilege.getDeniedFields(),
-                            indicesPrivilege.getQuery()
+                            indicesPrivilege.getQuery(),
+                            indicesPrivilege.getMetadataContributor()
                         )
                     );
                     return value;

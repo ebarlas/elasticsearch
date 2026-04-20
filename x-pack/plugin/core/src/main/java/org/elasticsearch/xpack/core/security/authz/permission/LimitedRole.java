@@ -119,6 +119,11 @@ public final class LimitedRole implements Role {
     }
 
     @Override
+    public boolean hasMetadataContributingPrivileges() {
+        return baseRole.hasMetadataContributingPrivileges() || limitedByRole.hasMetadataContributingPrivileges();
+    }
+
+    @Override
     public boolean equals(Object o) {
         if (this == o) {
             return true;

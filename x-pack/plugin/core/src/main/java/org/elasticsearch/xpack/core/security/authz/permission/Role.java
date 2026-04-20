@@ -30,6 +30,7 @@ import org.elasticsearch.xpack.core.security.authz.privilege.IndexPrivilege;
 import org.elasticsearch.xpack.core.security.authz.privilege.Privilege;
 import org.elasticsearch.xpack.core.security.authz.restriction.WorkflowResolver;
 import org.elasticsearch.xpack.core.security.authz.restriction.WorkflowsRestriction;
+import org.elasticsearch.xpack.core.security.authz.store.UserMetadataContributor;
 import org.elasticsearch.xpack.core.security.support.Automatons;
 
 import java.util.ArrayList;
@@ -83,6 +84,14 @@ public interface Role {
      * @return
      */
     boolean hasFieldOrDocumentLevelSecurity();
+
+    /**
+     * Whether any index privilege in this Role declares a {@link UserMetadataContributor} that should
+     * drive {@link org.elasticsearch.xpack.core.security.user.User} metadata enrichment before DLS
+     * template evaluation. Pre-computed; intended for use as a zero-cost gate at the
+     * authorization enrichment site.
+     */
+    boolean hasMetadataContributingPrivileges();
 
     /**
      * @return A predicate that will match all the indices that this role
@@ -292,6 +301,35 @@ public interface Role {
             return this;
         }
 
+        // Distinct overload (taking String[] rather than String...) so it cannot collide with the
+        // varargs signature above when callers pass a single index name. The
+        // metadataContributor-aware path is only reachable from CompositeRolesStore which always
+        // passes an explicit String[] from privilege.indices.toArray(Strings.EMPTY_ARRAY); test
+        // fixtures continue to use the varargs overload above with no ambiguity.
+        public Builder addImplicitWithContributor(
+            FieldPermissions fieldPermissions,
+            Set<BytesReference> query,
+            Set<IndexPrivilege> privilegesSplitBySelector,
+            boolean allowRestrictedIndices,
+            @Nullable UserMetadataContributor metadataContributor,
+            String[] indices
+        ) {
+            for (var indexPrivilege : privilegesSplitBySelector) {
+                groups.add(
+                    new IndicesPermissionGroupDefinition(
+                        indexPrivilege,
+                        fieldPermissions,
+                        query,
+                        allowRestrictedIndices,
+                        true,
+                        metadataContributor,
+                        indices
+                    )
+                );
+            }
+            return this;
+        }
+
         public Builder addImplicit(
             FieldPermissions fieldPermissions,
             Set<BytesReference> query,
@@ -299,7 +337,9 @@ public interface Role {
             boolean allowRestrictedIndices,
             String... indices
         ) {
-            groups.add(new IndicesPermissionGroupDefinition(privilege, fieldPermissions, query, allowRestrictedIndices, true, indices));
+            groups.add(
+                new IndicesPermissionGroupDefinition(privilege, fieldPermissions, query, allowRestrictedIndices, true, null, indices)
+            );
             return this;
         }
 
@@ -367,6 +407,7 @@ public interface Role {
                         group.query,
                         group.allowRestrictedIndices,
                         group.implicitlyGranted,
+                        group.metadataContributor,
                         group.indices
                     );
                 }
@@ -416,6 +457,8 @@ public interface Role {
             private final @Nullable Set<BytesReference> query;
             private final boolean allowRestrictedIndices;
             private final boolean implicitlyGranted;
+            @Nullable
+            private final UserMetadataContributor metadataContributor;
             private final String[] indices;
 
             private IndicesPermissionGroupDefinition(
@@ -425,7 +468,7 @@ public interface Role {
                 boolean allowRestrictedIndices,
                 String... indices
             ) {
-                this(privilege, fieldPermissions, query, allowRestrictedIndices, false, indices);
+                this(privilege, fieldPermissions, query, allowRestrictedIndices, false, null, indices);
             }
 
             private IndicesPermissionGroupDefinition(
@@ -436,11 +479,24 @@ public interface Role {
                 boolean implicitlyGranted,
                 String... indices
             ) {
+                this(privilege, fieldPermissions, query, allowRestrictedIndices, implicitlyGranted, null, indices);
+            }
+
+            private IndicesPermissionGroupDefinition(
+                IndexPrivilege privilege,
+                FieldPermissions fieldPermissions,
+                @Nullable Set<BytesReference> query,
+                boolean allowRestrictedIndices,
+                boolean implicitlyGranted,
+                @Nullable UserMetadataContributor metadataContributor,
+                String... indices
+            ) {
                 this.privilege = privilege;
                 this.fieldPermissions = fieldPermissions;
                 this.query = query;
                 this.allowRestrictedIndices = allowRestrictedIndices;
                 this.implicitlyGranted = implicitlyGranted;
+                this.metadataContributor = metadataContributor;
                 this.indices = indices;
             }
         }

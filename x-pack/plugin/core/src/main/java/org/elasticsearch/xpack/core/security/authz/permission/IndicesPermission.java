@@ -33,6 +33,7 @@ import org.elasticsearch.xpack.core.security.authz.RestrictedIndices;
 import org.elasticsearch.xpack.core.security.authz.accesscontrol.IndicesAccessControl;
 import org.elasticsearch.xpack.core.security.authz.privilege.IndexComponentSelectorPredicate;
 import org.elasticsearch.xpack.core.security.authz.privilege.IndexPrivilege;
+import org.elasticsearch.xpack.core.security.authz.store.UserMetadataContributor;
 import org.elasticsearch.xpack.core.security.support.Automatons;
 import org.elasticsearch.xpack.core.security.support.StringMatcher;
 
@@ -73,6 +74,7 @@ public final class IndicesPermission {
     private final RestrictedIndices restrictedIndices;
     private final Group[] groups;
     private final boolean hasFieldOrDocumentLevelSecurity;
+    private final boolean hasMetadataContributingPrivileges;
 
     public static class Builder {
 
@@ -103,7 +105,31 @@ public final class IndicesPermission {
             String... indices
         ) {
             groups.add(
-                new Group(privilege, fieldPermissions, query, allowRestrictedIndices, implicitlyGranted, restrictedIndices, indices)
+                new Group(privilege, fieldPermissions, query, allowRestrictedIndices, implicitlyGranted, null, restrictedIndices, indices)
+            );
+            return this;
+        }
+
+        public Builder addGroup(
+            IndexPrivilege privilege,
+            FieldPermissions fieldPermissions,
+            @Nullable Set<BytesReference> query,
+            boolean allowRestrictedIndices,
+            boolean implicitlyGranted,
+            @Nullable UserMetadataContributor metadataContributor,
+            String... indices
+        ) {
+            groups.add(
+                new Group(
+                    privilege,
+                    fieldPermissions,
+                    query,
+                    allowRestrictedIndices,
+                    implicitlyGranted,
+                    metadataContributor,
+                    restrictedIndices,
+                    indices
+                )
             );
             return this;
         }
@@ -119,6 +145,7 @@ public final class IndicesPermission {
         this.groups = groups;
         this.hasFieldOrDocumentLevelSecurity = Arrays.stream(groups).noneMatch(Group::isTotal)
             && Arrays.stream(groups).anyMatch(g -> g.hasQuery() || g.fieldPermissions.hasFieldLevelSecurity());
+        this.hasMetadataContributingPrivileges = Arrays.stream(groups).anyMatch(g -> g.getMetadataContributor() != null);
     }
 
     /**
@@ -161,6 +188,16 @@ public final class IndicesPermission {
 
     public boolean hasFieldOrDocumentLevelSecurity() {
         return hasFieldOrDocumentLevelSecurity;
+    }
+
+    /**
+     * Returns {@code true} if any group declares a {@link UserMetadataContributor} that should
+     * contribute additional entries to {@link org.elasticsearch.xpack.core.security.user.User}
+     * metadata before DLS template evaluation. This is a pre-computed boolean used as a zero-cost
+     * gate at the authorization enrichment site.
+     */
+    public boolean hasMetadataContributingPrivileges() {
+        return hasMetadataContributingPrivileges;
     }
 
     private IsResourceAuthorizedPredicate buildIndexMatcherPredicateForAction(String action) {
@@ -702,12 +739,15 @@ public final class IndicesPermission {
                             if (group.hasQuery()) {
                                 docPermissions = roleQueriesByIndex.computeIfAbsent(index, (k) -> new DocumentLevelPermissions());
                                 docPermissions.addAll(group.getQuery());
+                                docPermissions.addMetadataContributor(group.getMetadataContributor());
                             } else {
                                 // if more than one permission matches for a concrete index here and if
                                 // a single permission doesn't have a role query then DLS will not be
                                 // applied even when other permissions do have a role query
                                 docPermissions = DocumentLevelPermissions.ALLOW_ALL;
                                 // don't worry about what's already there - just overwrite it, it avoids doing a 2nd hash lookup.
+                                // Metadata enrichers are dropped on the floor here too: if DLS is not enforced for this
+                                // index the metadata enrichment for those queries serves no purpose.
                                 roleQueriesByIndex.put(index, docPermissions);
                             }
 
@@ -746,7 +786,7 @@ public final class IndicesPermission {
             final DocumentLevelPermissions permissions = roleQueriesByIndex.get(index);
             final DocumentPermissions documentPermissions;
             if (permissions != null && permissions.isAllowAll() == false) {
-                documentPermissions = DocumentPermissions.filteredBy(permissions.queries);
+                documentPermissions = DocumentPermissions.filteredBy(permissions.queries, permissions.metadataContributors);
             } else {
                 documentPermissions = DocumentPermissions.allowAll();
             }
@@ -993,6 +1033,11 @@ public final class IndicesPermission {
         // to be covered by the "indices"
         private final boolean allowRestrictedIndices;
         private final boolean implicitlyGranted;
+        // In-memory direct reference to a UserMetadataContributor whose output should be merged
+        // into User.metadata() before this group's DLS template query is evaluated. Set only by
+        // ImplicitPrivilegesProvider implementations; never crosses serialization boundaries.
+        @Nullable
+        private final UserMetadataContributor metadataContributor;
 
         public Group(
             IndexPrivilege privilege,
@@ -1002,7 +1047,7 @@ public final class IndicesPermission {
             RestrictedIndices restrictedIndices,
             String... indices
         ) {
-            this(privilege, fieldPermissions, query, allowRestrictedIndices, false, restrictedIndices, indices);
+            this(privilege, fieldPermissions, query, allowRestrictedIndices, false, null, restrictedIndices, indices);
         }
 
         public Group(
@@ -1014,6 +1059,19 @@ public final class IndicesPermission {
             RestrictedIndices restrictedIndices,
             String... indices
         ) {
+            this(privilege, fieldPermissions, query, allowRestrictedIndices, implicitlyGranted, null, restrictedIndices, indices);
+        }
+
+        public Group(
+            IndexPrivilege privilege,
+            FieldPermissions fieldPermissions,
+            @Nullable Set<BytesReference> query,
+            boolean allowRestrictedIndices,
+            boolean implicitlyGranted,
+            @Nullable UserMetadataContributor metadataContributor,
+            RestrictedIndices restrictedIndices,
+            String... indices
+        ) {
             assert indices.length != 0;
             this.privilege = privilege;
             this.actionMatcher = privilege.predicate();
@@ -1021,6 +1079,7 @@ public final class IndicesPermission {
             this.indices = indices;
             this.allowRestrictedIndices = allowRestrictedIndices;
             this.implicitlyGranted = implicitlyGranted;
+            this.metadataContributor = metadataContributor;
             if (allowRestrictedIndices) {
                 this.indexNameMatcher = StringMatcher.of(indices);
                 this.indexNameAutomaton = CachedSupplier.wrap(() -> Automatons.patterns(indices));
@@ -1076,6 +1135,16 @@ public final class IndicesPermission {
             return implicitlyGranted;
         }
 
+        /**
+         * Returns the {@link UserMetadataContributor} whose output should be merged into
+         * {@code User.metadata()} before this group's DLS template query is evaluated, or
+         * {@code null} if no contribution is required. In-memory reference; never serialized.
+         */
+        @Nullable
+        public UserMetadataContributor getMetadataContributor() {
+            return metadataContributor;
+        }
+
         public Automaton getIndexMatcherAutomaton() {
             return indexNameAutomaton.get();
         }
@@ -1113,6 +1182,11 @@ public final class IndicesPermission {
         }
 
         private Set<BytesReference> queries = null;
+        // References to UserMetadataContributors whose output must be merged into User.metadata()
+        // before the queries above can be evaluated. Tracked alongside queries (a contributor
+        // only matters where DLS exists); cleared when allowAll fires. Keyed by the contributor's
+        // .equals() contract, matching the upstream merge in CompositeRolesStore.
+        private Set<UserMetadataContributor> metadataContributors = null;
         private boolean allowAll = false;
 
         private void addAll(Set<BytesReference> query) {
@@ -1121,6 +1195,15 @@ public final class IndicesPermission {
                     queries = Sets.newHashSetWithExpectedSize(query.size());
                 }
                 queries.addAll(query);
+            }
+        }
+
+        private void addMetadataContributor(UserMetadataContributor metadataContributor) {
+            if (allowAll == false && metadataContributor != null) {
+                if (metadataContributors == null) {
+                    metadataContributors = new HashSet<>();
+                }
+                metadataContributors.add(metadataContributor);
             }
         }
 

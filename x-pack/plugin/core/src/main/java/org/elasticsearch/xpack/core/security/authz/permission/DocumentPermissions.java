@@ -24,6 +24,7 @@ import org.elasticsearch.index.search.NestedHelper;
 import org.elasticsearch.index.shard.ShardId;
 import org.elasticsearch.script.ScriptService;
 import org.elasticsearch.xcontent.NamedXContentRegistry;
+import org.elasticsearch.xpack.core.security.authz.store.UserMetadataContributor;
 import org.elasticsearch.xpack.core.security.authz.support.DLSRoleQueryValidator;
 import org.elasticsearch.xpack.core.security.authz.support.SecurityQueryTemplateEvaluator;
 import org.elasticsearch.xpack.core.security.authz.support.SecurityQueryTemplateEvaluator.DlsQueryEvaluationContext;
@@ -31,6 +32,8 @@ import org.elasticsearch.xpack.core.security.support.CacheKey;
 import org.elasticsearch.xpack.core.security.user.User;
 
 import java.io.IOException;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -53,19 +56,35 @@ public final class DocumentPermissions implements CacheKey {
     private final List<Set<BytesReference>> listOfQueries;
     @Nullable
     private List<List<String>> listOfEvaluatedQueries;
+    // Direct references to UserMetadataContributors whose output must be merged into User.metadata()
+    // before the queries above can be evaluated as DLS templates. Pure metadata: NOT considered by
+    // evaluateQueries(), filter(), buildCacheKey(), equals(), or hashCode(). The set is unioned
+    // across role intersection (limitDocumentPermissions).
+    @Nullable
+    private final Set<UserMetadataContributor> metadataContributors;
 
     private static final DocumentPermissions ALLOW_ALL = new DocumentPermissions();
 
     private DocumentPermissions() {
         this.listOfQueries = null;
+        this.metadataContributors = null;
     }
 
     private DocumentPermissions(Set<BytesReference> queries) {
+        this(queries, null);
+    }
+
+    private DocumentPermissions(Set<BytesReference> queries, @Nullable Set<UserMetadataContributor> metadataContributors) {
         assert queries != null && false == queries.isEmpty() : "null or empty queries not permitted";
         this.listOfQueries = List.of(new TreeSet<>(queries));
+        this.metadataContributors = freezeMetadataContributors(metadataContributors);
     }
 
     private DocumentPermissions(List<Set<BytesReference>> listOfQueries) {
+        this(listOfQueries, null);
+    }
+
+    private DocumentPermissions(List<Set<BytesReference>> listOfQueries, @Nullable Set<UserMetadataContributor> metadataContributors) {
         assert listOfQueries != null && false == listOfQueries.isEmpty() : "null or empty list of queries not permitted";
         assert listOfQueries.stream().allMatch(queries -> queries != null && false == queries.isEmpty())
             : "null or empty queries not permitted";
@@ -73,6 +92,15 @@ public final class DocumentPermissions implements CacheKey {
         this.listOfQueries = listOfQueries.stream()
             .map(queries -> queries instanceof SortedSet<BytesReference> ? queries : new TreeSet<>(queries))
             .toList();
+        this.metadataContributors = freezeMetadataContributors(metadataContributors);
+    }
+
+    @Nullable
+    private static Set<UserMetadataContributor> freezeMetadataContributors(@Nullable Set<UserMetadataContributor> metadataContributors) {
+        if (metadataContributors == null || metadataContributors.isEmpty()) {
+            return null;
+        }
+        return Collections.unmodifiableSet(new HashSet<>(metadataContributors));
     }
 
     public List<Set<BytesReference>> getListOfQueries() {
@@ -204,8 +232,38 @@ public final class DocumentPermissions implements CacheKey {
         return new DocumentPermissions(queries);
     }
 
+    /**
+     * Create {@link DocumentPermissions} for given set of queries and the
+     * {@link UserMetadataContributor} references whose output must be merged into
+     * {@code User.metadata()} before the queries can be evaluated as DLS templates.
+     */
+    public static DocumentPermissions filteredBy(
+        Set<BytesReference> queries,
+        @Nullable Set<UserMetadataContributor> metadataContributors
+    ) {
+        return new DocumentPermissions(queries, metadataContributors);
+    }
+
     public static DocumentPermissions allowAll() {
         return ALLOW_ALL;
+    }
+
+    /**
+     * Returns the (possibly empty/null) set of {@link UserMetadataContributor} instances whose
+     * output must be merged into {@code User.metadata()} before this permission's DLS template
+     * queries can be evaluated. Returns an immutable view; never participates in equality or
+     * cache keys.
+     */
+    @Nullable
+    public Set<UserMetadataContributor> getMetadataContributors() {
+        return metadataContributors;
+    }
+
+    /**
+     * @return {@code true} if any metadata contributor reference is attached to this permission.
+     */
+    public boolean hasMetadataContributors() {
+        return metadataContributors != null && false == metadataContributors.isEmpty();
     }
 
     /**
@@ -218,15 +276,36 @@ public final class DocumentPermissions implements CacheKey {
     public DocumentPermissions limitDocumentPermissions(DocumentPermissions limitedByDocumentPermissions) {
         if (hasDocumentLevelPermissions() && limitedByDocumentPermissions.hasDocumentLevelPermissions()) {
             return new DocumentPermissions(
-                Stream.concat(getListOfQueries().stream(), limitedByDocumentPermissions.getListOfQueries().stream()).toList()
+                Stream.concat(getListOfQueries().stream(), limitedByDocumentPermissions.getListOfQueries().stream()).toList(),
+                unionMetadataContributors(metadataContributors, limitedByDocumentPermissions.metadataContributors)
             );
         } else if (hasDocumentLevelPermissions()) {
-            return new DocumentPermissions(getListOfQueries());
+            return new DocumentPermissions(getListOfQueries(), metadataContributors);
         } else if (limitedByDocumentPermissions.hasDocumentLevelPermissions()) {
-            return new DocumentPermissions(limitedByDocumentPermissions.getListOfQueries());
+            return new DocumentPermissions(
+                limitedByDocumentPermissions.getListOfQueries(),
+                limitedByDocumentPermissions.metadataContributors
+            );
         } else {
             return DocumentPermissions.allowAll();
         }
+    }
+
+    @Nullable
+    private static Set<UserMetadataContributor> unionMetadataContributors(
+        @Nullable Set<UserMetadataContributor> a,
+        @Nullable Set<UserMetadataContributor> b
+    ) {
+        if (a == null || a.isEmpty()) {
+            return b;
+        }
+        if (b == null || b.isEmpty()) {
+            return a;
+        }
+        Set<UserMetadataContributor> merged = new HashSet<>(a.size() + b.size());
+        merged.addAll(a);
+        merged.addAll(b);
+        return merged;
     }
 
     @Override

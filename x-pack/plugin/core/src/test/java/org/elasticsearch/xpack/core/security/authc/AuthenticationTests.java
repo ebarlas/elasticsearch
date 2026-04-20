@@ -82,6 +82,60 @@ public class AuthenticationTests extends ESTestCase {
         assertFalse(authentication.isFailedRunAs());
     }
 
+    public void testWithEffectiveUserPreservesIdentityContext() {
+        final Authentication original = randomRealmAuthentication(randomBoolean());
+        final User originalUser = original.getEffectiveSubject().getUser();
+        final java.util.Map<String, Object> enrichedMetadata = new java.util.HashMap<>(originalUser.metadata());
+        enrichedMetadata.put("_enriched", "yes");
+        final User enrichedUser = new User(
+            originalUser.principal(),
+            originalUser.roles(),
+            originalUser.fullName(),
+            originalUser.email(),
+            enrichedMetadata,
+            originalUser.enabled()
+        );
+
+        final Authentication enriched = original.withEffectiveUser(enrichedUser);
+
+        assertSame(enrichedUser, enriched.getEffectiveSubject().getUser());
+        assertEquals(original.getEffectiveSubject().getRealm(), enriched.getEffectiveSubject().getRealm());
+        assertEquals(original.getEffectiveSubject().getTransportVersion(), enriched.getEffectiveSubject().getTransportVersion());
+        assertEquals(original.getEffectiveSubject().getMetadata(), enriched.getEffectiveSubject().getMetadata());
+        assertEquals(original.getAuthenticationType(), enriched.getAuthenticationType());
+        // Non-run-as invariant must be preserved: effective and authenticating subjects identical.
+        assertFalse(enriched.isRunAs());
+        assertSame(enriched.getEffectiveSubject(), enriched.getAuthenticatingSubject());
+        assertSame(enrichedUser, enriched.getAuthenticatingSubject().getUser());
+    }
+
+    public void testWithEffectiveUserPreservesRunAs() {
+        final Authentication runAs = AuthenticationTestHelper.builder().realm().runAs().build();
+        assertTrue(runAs.isRunAs());
+        final User impersonated = runAs.getEffectiveSubject().getUser();
+        final java.util.Map<String, Object> enrichedMetadata = new java.util.HashMap<>(impersonated.metadata());
+        enrichedMetadata.put("_enriched", "yes");
+        final User enriched = new User(
+            impersonated.principal(),
+            impersonated.roles(),
+            impersonated.fullName(),
+            impersonated.email(),
+            enrichedMetadata,
+            impersonated.enabled()
+        );
+
+        final Authentication after = runAs.withEffectiveUser(enriched);
+
+        // Effective user is the enriched impersonated user
+        assertSame(enriched, after.getEffectiveSubject().getUser());
+        // Run-as is preserved: the authenticating subject is unchanged (the impersonator)
+        assertTrue(after.isRunAs());
+        assertSame(runAs.getAuthenticatingSubject(), after.getAuthenticatingSubject());
+        assertEquals(runAs.getAuthenticatingSubject().getUser(), after.getAuthenticatingSubject().getUser());
+        // The lookup realm (where the impersonated user was found) is preserved
+        assertEquals(runAs.getEffectiveSubject().getRealm(), after.getEffectiveSubject().getRealm());
+    }
+
     public void testCanAccessResourcesOf() {
         // Same user is the same
         final User user1 = randomUser();

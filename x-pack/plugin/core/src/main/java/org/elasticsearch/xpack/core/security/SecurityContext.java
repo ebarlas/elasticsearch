@@ -29,6 +29,7 @@ import org.elasticsearch.xpack.core.security.user.User;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -210,6 +211,71 @@ public class SecurityContext {
                 }
             });
             consumer.accept(original);
+        }
+    }
+
+    /**
+     * Runs the given action with the current thread context's {@link Authentication} swapped
+     * for one whose effective {@link User} carries additional metadata entries merged into its
+     * {@link User#metadata()}. Used by the authorization-time metadata enrichment hook so that
+     * DLS template queries (e.g. {@code {{_user.metadata._foo}}}) see attributes contributed by
+     * registered {@code UserMetadataContributor}s without those attributes being persisted to the
+     * underlying user record.
+     * <p>
+     * Only the Authentication transient and header are rewritten. Every other key on the thread
+     * context -- {@code _authz_info}, {@code _originating_action_name}, {@code _indices_permissions},
+     * parent-authorization, audit request id, APM trace context, and all request headers --
+     * passes through untouched. The original Authentication is restored automatically when the
+     * action returns or throws.
+     * <p>
+     * Run-as semantics are preserved: the enrichment targets the <em>effective</em> user
+     * (the impersonated user under run-as), not the authenticating user.
+     * <p>
+     * All keys in {@code additionalMetadata} must start with {@code "_"}: this matches the
+     * read-only namespace exposed in DLS templates and avoids clashing with attributes the
+     * underlying realm chose not to expose.
+     */
+    public void executeWithEnrichedUserMetadata(Map<String, Object> additionalMetadata, Runnable action) {
+        Objects.requireNonNull(additionalMetadata, "additionalMetadata must not be null");
+        Objects.requireNonNull(action, "action must not be null");
+        if (additionalMetadata.isEmpty()) {
+            action.run();
+            return;
+        }
+        assert additionalMetadata.keySet().stream().allMatch(k -> k != null && k.startsWith("_"))
+            : "all enriched metadata keys must start with '_' to live in the DLS-readable namespace, got "
+                + additionalMetadata.keySet();
+
+        final Authentication current = getAuthentication();
+        if (current == null) {
+            // No authentication present (security disabled or not yet established): nothing to enrich.
+            action.run();
+            return;
+        }
+        final User effectiveUser = current.getEffectiveSubject().getUser();
+        final Map<String, Object> mergedMetadata = new HashMap<>(effectiveUser.metadata());
+        mergedMetadata.putAll(additionalMetadata);
+        final User enrichedUser = new User(
+            effectiveUser.principal(),
+            effectiveUser.roles(),
+            effectiveUser.fullName(),
+            effectiveUser.email(),
+            mergedMetadata,
+            effectiveUser.enabled()
+        );
+        final Authentication enriched = current.withEffectiveUser(enrichedUser);
+
+        // Clear only the Authentication transient and header (AuthenticationContextSerializer
+        // refuses to overwrite an existing Authentication), set the enriched one, and restore
+        // the original on scope exit. Every other thread-context key remains active throughout.
+        try (
+            ThreadContext.StoredContext ignore = threadContext.newStoredContext(
+                List.of(AUTHENTICATION_KEY),
+                List.of(AUTHENTICATION_KEY)
+            )
+        ) {
+            setAuthentication(enriched);
+            action.run();
         }
     }
 

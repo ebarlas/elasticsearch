@@ -84,10 +84,12 @@ import org.elasticsearch.xpack.core.security.authz.RestrictedIndices;
 import org.elasticsearch.xpack.core.security.authz.RoleDescriptorsIntersection;
 import org.elasticsearch.xpack.core.security.authz.accesscontrol.IndicesAccessControl;
 import org.elasticsearch.xpack.core.security.authz.permission.FieldPermissionsCache;
+import org.elasticsearch.xpack.core.security.authz.permission.Role;
 import org.elasticsearch.xpack.core.security.authz.privilege.ApplicationPrivilegeDescriptor;
 import org.elasticsearch.xpack.core.security.authz.privilege.ClusterPrivilegeResolver;
 import org.elasticsearch.xpack.core.security.authz.privilege.IndexPrivilege;
 import org.elasticsearch.xpack.core.security.authz.store.RoleReference;
+import org.elasticsearch.xpack.core.security.authz.store.UserMetadataContributor;
 import org.elasticsearch.xpack.core.security.user.AnonymousUser;
 import org.elasticsearch.xpack.core.security.user.InternalUser;
 import org.elasticsearch.xpack.core.security.user.SystemUser;
@@ -651,9 +653,88 @@ public class AuthorizationService {
         final Authentication authentication = requestInfo.getAuthentication();
         final TransportRequest request = requestInfo.getRequest();
         final String action = requestInfo.getAction();
-        securityContext.putIndicesAccessControl(indicesAccessControl);
 
         final AuthorizationContext authzContext = new AuthorizationContext(action, authzInfo, indicesAccessControl);
+
+        // The downstream dispatch must observe both the resolved IndicesAccessControl on the thread
+        // context and (when contributors produced metadata) the enriched Authentication. We package
+        // the dispatch as a Runnable continuation so we can either invoke it directly (no
+        // contribution needed) or invoke it inside SecurityContext#executeWithEnrichedUserMetadata,
+        // which swaps only the Authentication on the current thread context. Every other
+        // transient (_authz_info, _originating_action_name, parent-authorization, audit request
+        // id) flows through untouched. Anything the continuation puts onto the thread context
+        // (IAC, pre-authorization markers) is captured by wrapPreservingContext snapshots taken
+        // by the dispatched async listeners, so those snapshots correctly carry both the
+        // enriched Authentication and the IAC.
+        final Runnable dispatchContinuation = () -> dispatchAuthorizedIndexAction(
+            requestInfo,
+            requestId,
+            authzInfo,
+            authzEngine,
+            resolvedIndicesAsyncSupplier,
+            projectMetadata,
+            listener,
+            authentication,
+            request,
+            action,
+            indicesAccessControl,
+            authzContext
+        );
+
+        // Cheap pre-check: skip the IAC scan + contributor merge entirely when the role doesn't
+        // carry any metadata-contributing privileges. The flag is pre-computed at IndicesPermission
+        // construction. For a custom authz engine (role == null) we fall through to the IAC scan
+        // below as a safety net.
+        final Role rbacRole = RBACEngine.maybeGetRBACEngineRole(authzInfo);
+        if (rbacRole != null && rbacRole.hasMetadataContributingPrivileges() == false) {
+            dispatchContinuation.run();
+            return;
+        }
+
+        final Set<UserMetadataContributor> contributors = indicesAccessControl.collectMetadataContributors();
+        if (contributors.isEmpty()) {
+            dispatchContinuation.run();
+            return;
+        }
+
+        // Pass the effective user's existing metadata so that UserMetadataContributors.merge can
+        // skip any contributor whose declared keys have already been folded in by an earlier
+        // authorization on this request lifecycle. This is the per-request idempotence guarantee:
+        // PreAuthorizationUtils disables its parent-skip optimization whenever DLS is in play, so
+        // every shard sub-action would otherwise re-invoke every contributor. The enriched
+        // Authentication produced by executeWithEnrichedUserMetadata flows to downstream nodes in
+        // transport headers, which is what makes the metadata visible here on subsequent hops.
+        //
+        // Note: we do NOT pass the user through to the contributors themselves. By contract (see
+        // UserMetadataContributor's javadoc), implementations must read the EFFECTIVE user from
+        // SecurityContext, since the framework's view of "effective" is not always what a
+        // contributor wants (e.g. under future protocol extensions). Today that distinction is
+        // moot, but the SPI signature stays minimal so we don't have to choose for them.
+        final Map<String, Object> existingMetadata = authentication.getEffectiveSubject().getUser().metadata();
+        UserMetadataContributors.merge(contributors, existingMetadata, ActionListener.wrap(additionalMetadata -> {
+            if (additionalMetadata == null || additionalMetadata.isEmpty()) {
+                dispatchContinuation.run();
+            } else {
+                securityContext.executeWithEnrichedUserMetadata(additionalMetadata, dispatchContinuation);
+            }
+        }, listener::onFailure));
+    }
+
+    private void dispatchAuthorizedIndexAction(
+        final RequestInfo requestInfo,
+        final String requestId,
+        final AuthorizationInfo authzInfo,
+        final AuthorizationEngine authzEngine,
+        final AsyncSupplier<ResolvedIndices> resolvedIndicesAsyncSupplier,
+        final ProjectMetadata projectMetadata,
+        final ActionListener<Void> listener,
+        final Authentication authentication,
+        final TransportRequest request,
+        final String action,
+        final IndicesAccessControl indicesAccessControl,
+        final AuthorizationContext authzContext
+    ) {
+        securityContext.putIndicesAccessControl(indicesAccessControl);
         PreAuthorizationUtils.maybeSkipChildrenActionAuthorization(securityContext, authzContext);
 
         // if we are creating an index we need to authorize potential aliases created at the same time

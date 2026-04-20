@@ -130,6 +130,11 @@ public class SimpleRole implements Role {
     }
 
     @Override
+    public boolean hasMetadataContributingPrivileges() {
+        return indices.hasMetadataContributingPrivileges();
+    }
+
+    @Override
     public IsResourceAuthorizedPredicate allowedIndicesMatcher(String action) {
         return indices.allowedIndicesMatcher(action);
     }

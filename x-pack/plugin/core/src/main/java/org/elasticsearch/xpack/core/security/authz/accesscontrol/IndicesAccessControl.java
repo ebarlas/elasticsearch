@@ -16,11 +16,13 @@ import org.elasticsearch.core.Nullable;
 import org.elasticsearch.xpack.core.security.authz.IndicesAndAliasesResolverField;
 import org.elasticsearch.xpack.core.security.authz.permission.DocumentPermissions;
 import org.elasticsearch.xpack.core.security.authz.permission.FieldPermissions;
+import org.elasticsearch.xpack.core.security.authz.store.UserMetadataContributor;
 import org.elasticsearch.xpack.core.security.authz.support.SecurityQueryTemplateEvaluator.DlsQueryEvaluationContext;
 import org.elasticsearch.xpack.core.security.support.CacheKey;
 
 import java.io.IOException;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -114,6 +116,30 @@ public class IndicesAccessControl {
         } else {
             return DlsFlsUsage.NONE;
         }
+    }
+
+    /**
+     * Collect the union of all {@link UserMetadataContributor} references carried by the
+     * {@link DocumentPermissions} of every {@link IndexAccessControl} entry in this access
+     * control. These contributors must be invoked and their output merged into
+     * {@code User.metadata()} before evaluating any DLS Mustache templates against the
+     * corresponding indices.
+     * <p>
+     * Returns an empty set if no entry carries any contributor. Never returns {@code null}.
+     */
+    public Set<UserMetadataContributor> collectMetadataContributors() {
+        Set<UserMetadataContributor> result = null;
+        for (IndexAccessControl iac : this.getAllIndexPermissions().values()) {
+            final Set<UserMetadataContributor> contributors = iac.getMetadataContributors();
+            if (contributors == null || contributors.isEmpty()) {
+                continue;
+            }
+            if (result == null) {
+                result = new HashSet<>();
+            }
+            result.addAll(contributors);
+        }
+        return result == null ? Collections.emptySet() : Collections.unmodifiableSet(result);
     }
 
     public List<String> getIndicesWithFieldOrDocumentLevelSecurity() {
@@ -221,6 +247,16 @@ public class IndicesAccessControl {
          */
         public boolean isImplicitlyGranted() {
             return implicitlyGranted;
+        }
+
+        /**
+         * Returns the {@link UserMetadataContributor} instances whose output must be merged into
+         * {@code User.metadata()} before this index's DLS template queries can be evaluated, or
+         * {@code null} if no contribution is required. Delegates to {@link DocumentPermissions}.
+         */
+        @Nullable
+        public Set<UserMetadataContributor> getMetadataContributors() {
+            return documentPermissions.getMetadataContributors();
         }
 
         /**

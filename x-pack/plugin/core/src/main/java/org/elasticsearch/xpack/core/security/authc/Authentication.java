@@ -424,6 +424,39 @@ public final class Authentication implements ToXContentObject {
         );
     }
 
+    /**
+     * Returns a new {@link Authentication} that is identical to this one except that the effective
+     * subject's {@link User} is replaced. The effective subject's realm reference, transport
+     * version, and subject metadata are all preserved, as is the authenticating subject and the
+     * authentication type.
+     * <p>
+     * This is <em>not</em> the same as {@link #runAs(User, RealmRef)}: run-as creates a new effective
+     * subject backed by a (possibly null) lookup realm, intended for the user-impersonation flow.
+     * {@code withEffectiveUser} keeps the existing effective subject's identity context intact and
+     * only swaps the user object itself, intended for in-flight enrichment of {@link User#metadata()}
+     * (for example, by the authorization-time metadata enrichment hook used by DLS template queries).
+     * <p>
+     * Under run-as, the effective subject is the impersonated user; this method correctly swaps the
+     * impersonated user (with enriched metadata) while preserving the impersonation -- the
+     * authenticating subject is untouched.
+     */
+    public Authentication withEffectiveUser(User user) {
+        Objects.requireNonNull(user, "user must not be null");
+        final Subject newEffectiveSubject = new Subject(
+            user,
+            effectiveSubject.getRealm(),
+            effectiveSubject.getTransportVersion(),
+            effectiveSubject.getMetadata()
+        );
+        if (isRunAs()) {
+            return new Authentication(newEffectiveSubject, authenticatingSubject, type);
+        } else {
+            // Preserve the non-run-as invariant: effectiveSubject and authenticatingSubject must be
+            // the same instance for isRunAs() (which is identity-based) to keep returning false.
+            return new Authentication(newEffectiveSubject, type);
+        }
+    }
+
     /** Returns a new {@code Authentication} for tokens created by the current {@code Authentication}, which is used when
      * authenticating using the token credential.
      */
