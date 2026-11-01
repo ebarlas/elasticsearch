@@ -6,6 +6,7 @@
  */
 
 module org.elasticsearch.xcore {
+    requires java.net.http;
     requires org.elasticsearch.cli;
     requires org.elasticsearch.entitlement;
     requires org.elasticsearch.base;

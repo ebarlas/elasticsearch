@@ -15,10 +15,9 @@ import org.elasticsearch.common.network.NetworkService;
 import org.elasticsearch.common.settings.SecureString;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.ssl.KeyStoreUtil;
+import org.elasticsearch.common.ssl.SslConfiguration;
 import org.elasticsearch.core.CharArrays;
 import org.elasticsearch.core.CheckedFunction;
-import org.elasticsearch.core.Releasables;
-import org.elasticsearch.core.SuppressForbidden;
 import org.elasticsearch.env.Environment;
 import org.elasticsearch.xcontent.XContentType;
 import org.elasticsearch.xpack.core.XPackSettings;
@@ -29,13 +28,14 @@ import org.elasticsearch.xpack.core.ssl.SslProfile;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.InetAddress;
 import java.net.MalformedURLException;
 import java.net.Socket;
 import java.net.URISyntaxException;
 import java.net.URL;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
 import java.nio.CharBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
@@ -43,6 +43,7 @@ import java.security.MessageDigest;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
@@ -50,9 +51,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.KeyManager;
 import javax.net.ssl.SSLContext;
-import javax.net.ssl.SSLSocketFactory;
+import javax.net.ssl.SSLEngine;
+import javax.net.ssl.SSLParameters;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509ExtendedTrustManager;
 import javax.net.ssl.X509TrustManager;
@@ -68,11 +70,11 @@ import static org.elasticsearch.http.HttpTransportSettings.SETTING_HTTP_PUBLISH_
 public class CommandLineHttpClient {
 
     /**
-     * Timeout HTTP(s) reads after 35 seconds.
+     * Timeout HTTP(s) requests after 35 seconds.
      * The default timeout for discovering a master is 30s, and we want to be longer than this, otherwise a querying a disconnected node
      * will trigger as client side timeout rather than giving clear error details.
      */
-    private static final int READ_TIMEOUT = 35 * 1000;
+    private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(35);
 
     private final Environment env;
     private final String pinnedCaCertFingerprint;
@@ -137,7 +139,6 @@ public class CommandLineHttpClient {
         return execute(method, url, authorizationHeaderValue, requestBodySupplier, responseHandler);
     }
 
-    @SuppressForbidden(reason = "connect() and getInputStream() on URLConnection are needed for command-line HTTP client")
     private HttpResponse execute(
         String method,
         URL url,
@@ -145,58 +146,68 @@ public class CommandLineHttpClient {
         CheckedSupplier<String, Exception> requestBodySupplier,
         CheckedFunction<InputStream, HttpResponseBuilder, Exception> responseHandler
     ) throws Exception {
-        final HttpURLConnection conn;
+        final HttpClient.Builder clientBuilder = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1);
         // If using SSL, need a custom service because it's likely a self-signed certificate
         if ("https".equalsIgnoreCase(url.getProtocol())) {
             final SSLService sslService = new SSLService(env);
-            final HttpsURLConnection httpsConn = (HttpsURLConnection) url.openConnection();
             if (pinnedCaCertFingerprint != null) {
                 final SSLContext sslContext = SSLContext.getInstance("TLS");
                 sslContext.init(null, new TrustManager[] { fingerprintTrustingTrustManager(pinnedCaCertFingerprint) }, null);
-                httpsConn.setSSLSocketFactory(new ConnectedSocketFactory(sslContext.getSocketFactory()));
+                clientBuilder.sslContext(sslContext);
             } else {
                 final SslProfile sslProfile = sslService.profile(XPackSettings.HTTP_SSL_PREFIX);
-                httpsConn.setSSLSocketFactory(new ConnectedSocketFactory(sslProfile.socketFactory()));
-                final boolean isHostnameVerificationEnabled = sslProfile.configuration().verificationMode().isHostnameVerificationEnabled();
-                if (isHostnameVerificationEnabled == false) {
-                    httpsConn.setHostnameVerifier((hostname, session) -> true);
+                final SslConfiguration sslConfiguration = sslProfile.configuration();
+                final boolean isHostnameVerificationEnabled = sslConfiguration.verificationMode().isHostnameVerificationEnabled();
+                final SSLContext sslContext;
+                if (isHostnameVerificationEnabled) {
+                    sslContext = sslProfile.sslContext();
+                } else {
+                    sslContext = SSLContext.getInstance("TLS");
+                    sslContext.init(
+                        new KeyManager[] { sslConfiguration.keyConfig().createKeyManager() },
+                        new TrustManager[] { hostnameIgnoringTrustManager(sslConfiguration.trustConfig().createTrustManager()) },
+                        null
+                    );
                 }
-            }
-            conn = httpsConn;
-        } else {
-            conn = (HttpURLConnection) url.openConnection();
-        }
-        conn.setRequestMethod(method);
-        conn.setReadTimeout(READ_TIMEOUT);
-        // Add basic-auth header
-        conn.setRequestProperty("Authorization", authorizationHeader);
-        conn.setRequestProperty("Content-Type", XContentType.JSON.mediaType());
-        String bodyString = requestBodySupplier.get();
-        conn.setDoOutput(bodyString != null); // set true if we are sending a body
-        conn.connect();
-        if (bodyString != null) {
-            try (OutputStream out = conn.getOutputStream()) {
-                out.write(bodyString.getBytes(StandardCharsets.UTF_8));
-            } catch (Exception e) {
-                Releasables.closeWhileHandlingException(conn::disconnect);
-                throw e;
+                final SSLParameters sslParameters = new SSLParameters(
+                    SSLService.supportedCiphers(
+                        sslContext.getSupportedSSLParameters().getCipherSuites(),
+                        sslConfiguration.getCipherSuites(),
+                        false
+                    ),
+                    sslConfiguration.supportedProtocols().toArray(Strings.EMPTY_ARRAY)
+                );
+                // we use the cipher suite order so that we can prefer the ciphers we set first in the list
+                sslParameters.setUseCipherSuitesOrder(true);
+                clientBuilder.sslContext(sslContext).sslParameters(sslParameters);
             }
         }
-        // this throws IOException if there is a network problem
-        final int responseCode = conn.getResponseCode();
-        HttpResponseBuilder responseBuilder;
-        try (InputStream inputStream = conn.getInputStream()) {
-            responseBuilder = responseHandler.apply(inputStream);
-        } catch (IOException e) {
-            // this IOException is if the HTTP response code is 'BAD' (>= 400)
-            try (InputStream errorStream = conn.getErrorStream()) {
-                responseBuilder = responseHandler.apply(errorStream);
+        final String bodyString = requestBodySupplier.get();
+        final HttpRequest request = HttpRequest.newBuilder(url.toURI())
+            .method(
+                method,
+                bodyString == null
+                    ? HttpRequest.BodyPublishers.noBody()
+                    : HttpRequest.BodyPublishers.ofString(bodyString, StandardCharsets.UTF_8)
+            )
+            .timeout(REQUEST_TIMEOUT)
+            // Add basic-auth header
+            .header("Authorization", authorizationHeader)
+            .header("Content-Type", XContentType.JSON.mediaType())
+            .build();
+        try (HttpClient client = clientBuilder.build()) {
+            // this throws IOException if there is a network problem
+            final java.net.http.HttpResponse<InputStream> response = client.send(
+                request,
+                java.net.http.HttpResponse.BodyHandlers.ofInputStream()
+            );
+            final HttpResponseBuilder responseBuilder;
+            try (InputStream inputStream = response.body()) {
+                responseBuilder = responseHandler.apply(inputStream);
             }
-        } finally {
-            Releasables.closeWhileHandlingException(conn::disconnect);
+            responseBuilder.withHttpStatus(response.statusCode());
+            return responseBuilder.build();
         }
-        responseBuilder.withHttpStatus(responseCode);
-        return responseBuilder.build();
     }
 
     public String getDefaultURL() {
@@ -375,57 +386,47 @@ public class CommandLineHttpClient {
     }
 
     /**
-     * An {@link SSLSocketFactory} that only creates connected sockets, so that {@link HttpsURLConnection} connects a plain socket itself
-     * and layers TLS over it with the host name from the URL. Given an unconnected socket instead, the JSSE provider has to recover the
-     * peer name from the address the socket is connected to later, for endpoint identification. The JDK's provider does; the Bouncy
-     * Castle FIPS provider does not, and fails hostname verification against the IP literal that {@link #getDefaultURL()} produces,
-     * however the node's certificate names it. Declining unconnected sockets is the behaviour of
-     * {@link javax.net.SocketFactory#createSocket()} itself, which the JDK's HTTPS client handles by falling back to a plain socket.
+     * Returns a TrustManager that validates the server certificate chain with {@code delegate}, but not that the certificate names the
+     * server. {@link HttpClient} always has the TLS layer verify the server's host name and offers no per-client way to turn that off,
+     * so this is how a verification mode without hostname verification is honoured. The two-argument checks of a JSSE trust manager do
+     * not perform endpoint identification.
      */
-    static final class ConnectedSocketFactory extends SSLSocketFactory {
+    private static X509ExtendedTrustManager hostnameIgnoringTrustManager(X509ExtendedTrustManager delegate) {
+        return new X509ExtendedTrustManager() {
+            @Override
+            public void checkClientTrusted(X509Certificate[] chain, String authType, Socket socket) throws CertificateException {
+                delegate.checkClientTrusted(chain, authType, socket);
+            }
 
-        private final SSLSocketFactory delegate;
+            @Override
+            public void checkServerTrusted(X509Certificate[] chain, String authType, Socket socket) throws CertificateException {
+                delegate.checkServerTrusted(chain, authType);
+            }
 
-        ConnectedSocketFactory(SSLSocketFactory delegate) {
-            this.delegate = delegate;
-        }
+            @Override
+            public void checkClientTrusted(X509Certificate[] chain, String authType, SSLEngine engine) throws CertificateException {
+                delegate.checkClientTrusted(chain, authType, engine);
+            }
 
-        // createSocket() is deliberately not overridden: SocketFactory's implementation throws a SocketException caused by an
-        // UnsupportedOperationException, the signal HttpsURLConnection looks for before connecting a plain socket of its own
+            @Override
+            public void checkServerTrusted(X509Certificate[] chain, String authType, SSLEngine engine) throws CertificateException {
+                delegate.checkServerTrusted(chain, authType);
+            }
 
-        @Override
-        public Socket createSocket(Socket socket, String host, int port, boolean autoClose) throws IOException {
-            return delegate.createSocket(socket, host, port, autoClose);
-        }
+            @Override
+            public void checkClientTrusted(X509Certificate[] chain, String authType) throws CertificateException {
+                delegate.checkClientTrusted(chain, authType);
+            }
 
-        @Override
-        public Socket createSocket(String host, int port) throws IOException {
-            return delegate.createSocket(host, port);
-        }
+            @Override
+            public void checkServerTrusted(X509Certificate[] chain, String authType) throws CertificateException {
+                delegate.checkServerTrusted(chain, authType);
+            }
 
-        @Override
-        public Socket createSocket(String host, int port, InetAddress localHost, int localPort) throws IOException {
-            return delegate.createSocket(host, port, localHost, localPort);
-        }
-
-        @Override
-        public Socket createSocket(InetAddress host, int port) throws IOException {
-            return delegate.createSocket(host, port);
-        }
-
-        @Override
-        public Socket createSocket(InetAddress address, int port, InetAddress localAddress, int localPort) throws IOException {
-            return delegate.createSocket(address, port, localAddress, localPort);
-        }
-
-        @Override
-        public String[] getDefaultCipherSuites() {
-            return delegate.getDefaultCipherSuites();
-        }
-
-        @Override
-        public String[] getSupportedCipherSuites() {
-            return delegate.getSupportedCipherSuites();
-        }
+            @Override
+            public X509Certificate[] getAcceptedIssuers() {
+                return delegate.getAcceptedIssuers();
+            }
+        };
     }
 }

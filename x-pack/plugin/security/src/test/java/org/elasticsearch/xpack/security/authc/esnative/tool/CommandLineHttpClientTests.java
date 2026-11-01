@@ -142,19 +142,16 @@ public class CommandLineHttpClientTests extends ESTestCase {
                 SslUtil.calculateFingerprint(pinnedCa, "SHA-256")
             );
             final URL url = new URL("https://localhost:" + testServer.getPort() + "/test");
-            // SunJSSE reports the handshake failure as an SSLException. The FIPS JSSE provider throws
-            // org.bouncycastle.tls.TlsFatalAlert, which is only present on the FIPS runtime classpath.
+            // The JDK HTTP client reports the handshake failure as an SSLException with either JSSE provider.
             final Exception thrown = expectThrows(
                 Exception.class,
                 () -> client.execute("GET", url, "u1", new SecureString(new char[] { 'p' }), () -> null, this::responseBuilder)
             );
+            assertThat(thrown, instanceOf(SSLException.class));
             if (inFipsJvm()) {
-                assertThat(thrown.getClass().getName(), equalTo("org.bouncycastle.tls.TlsFatalAlert"));
                 Throwable cause = ExceptionsHelper.unwrap(thrown, CertificateException.class);
                 assertThat(cause, instanceOf(CertificateException.class));
                 assertThat(cause.getMessage(), containsString("Unable to construct a valid chain"));
-            } else {
-                assertThat(thrown, instanceOf(SSLException.class));
             }
         }
     }
@@ -181,17 +178,12 @@ public class CommandLineHttpClientTests extends ESTestCase {
                 SslUtil.calculateFingerprint(pinnedCa, "SHA-256")
             );
             final URL url = new URL("https://localhost:" + testServer.getPort() + "/test");
-            // SunJSSE reports the handshake failure as an SSLException. The FIPS JSSE provider throws
-            // org.bouncycastle.tls.TlsFatalAlert, which is only present on the FIPS runtime classpath.
+            // The JDK HTTP client reports the handshake failure as an SSLException with either JSSE provider.
             final Exception thrown = expectThrows(
                 Exception.class,
                 () -> client.execute("GET", url, "u1", new SecureString(new char[] { 'p' }), () -> null, this::responseBuilder)
             );
-            if (inFipsJvm()) {
-                assertThat(thrown.getClass().getName(), equalTo("org.bouncycastle.tls.TlsFatalAlert"));
-            } else {
-                assertThat(thrown, instanceOf(SSLException.class));
-            }
+            assertThat(thrown, instanceOf(SSLException.class));
             // SunJSSE formats notAfter with Date.toString(), which uses the JVM default zone, so the
             // calendar year is not stable (Jan 1 2021 GMT is still 2020 in US zones). BouncyCastle on a
             // FIPS JVM reports the certificate's ASN.1 time instead
