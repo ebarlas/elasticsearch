@@ -6,7 +6,14 @@
  */
 package org.elasticsearch.xpack.security.authz.store;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.elasticsearch.action.ActionListener;
+import org.elasticsearch.action.support.ContextPreservingActionListener;
+import org.elasticsearch.action.support.SubscribableListener;
 import org.elasticsearch.cluster.metadata.ProjectId;
+import org.elasticsearch.common.util.concurrent.EsExecutors;
+import org.elasticsearch.common.util.concurrent.ThreadContext;
 import org.elasticsearch.common.util.set.Sets;
 import org.elasticsearch.core.Nullable;
 import org.elasticsearch.xpack.core.security.authz.permission.Role;
@@ -27,25 +34,33 @@ import java.util.function.Predicate;
  * Owns the role cache and the negative-lookup cache of the {@link CompositeRolesStore} and keeps them consistent with the role
  * sources across invalidations.
  * <p>
- * Every operation takes this object's monitor, and nothing expensive runs under it: resolving descriptors and building the
- * role happen before {@link #putIfCurrent} is called, and a read hashes and compares the role key, whose cost grows with the
- * number of role names, before taking the monitor. To make that possible, each cached role key is interned to an
- * {@link InternedKey} whose equality is identity, and the role cache is keyed by that token, so a lookup under the monitor costs
- * the same regardless of the size of the key. An invalidation removes the affected entries
- * from both caches and then advances a generation. A resolution captures the generation before it consults any role source, so
- * if it finds the generation unchanged when it offers its result to the cache, no invalidation overlapped it and the result is
- * current. A resolution that did overlap an invalidation finds the generation moved and caches nothing; the next resolution
- * rebuilds the role from the current sources.
+ * The role cache holds a {@link RoleLoad} per key, which is inserted on the first miss and completed when the role is built, so
+ * concurrent misses for the same key share one resolution, and a burst of requests after an invalidation does not resolve and build
+ * the same role once per request. A load that fails or whose role must not be cached is removed before its callers are completed,
+ * so the next miss resolves again.
  * <p>
- * There is one generation per project plus a global one, so an invalidation scoped to one project does not discard the results
- * of resolutions in flight for other projects.
+ * Every operation takes this object's monitor, and nothing expensive runs under it: resolving descriptors and building the role
+ * happen outside it, and a read hashes and compares the role key, whose cost grows with the number of role names, before taking
+ * the monitor. To make that possible, each cached role key is interned to an {@link InternedKey} whose equality is identity, and the
+ * role cache is keyed by that token, so a lookup under the monitor costs the same regardless of the size of the key.
+ * <p>
+ * An invalidation removes the affected entries from both caches, whether their loads have completed or not, so a load that overlaps
+ * an invalidation is no longer cached when it completes, and a caller that arrives after the invalidation starts a new load rather
+ * than joining it. The names a load found missing are recorded only when it completes, so an invalidation also advances a
+ * generation, which a load captures before it consults any role source. A load that finds the generation moved when it completes
+ * records no missing names, since it cannot tell whether they were found missing before or after the invalidation.
+ * <p>
+ * There is one generation per project plus a global one, so an invalidation scoped to one project does not discard the missing
+ * names found by loads in flight for other projects.
  */
 final class GuardedRoleCaches {
 
+    private static final Logger logger = LogManager.getLogger(GuardedRoleCaches.class);
+
     /**
-     * The state of the caches as observed by a resolution before it consulted any role source. Opaque to callers.
+     * The state of the caches as observed by a load before it consulted any role source.
      */
-    record Generation(long project, long global) {}
+    private record Generation(long project, long global) {}
 
     /**
      * A cache key that scopes another key to a project.
@@ -69,22 +84,57 @@ final class GuardedRoleCaches {
     }
 
     /**
+     * What a {@link RoleLoader} built. {@code missingNames} are the role names that no source defined, and {@code cacheable} is
+     * whether the role may be served to later callers and its missing names recorded.
+     */
+    record LoadedRole(Role role, Set<String> missingNames, boolean cacheable) {}
+
+    /**
+     * Resolves and builds a role that missed the cache.
+     */
+    @FunctionalInterface
+    interface RoleLoader {
+        void load(ActionListener<LoadedRole> listener);
+    }
+
+    /**
+     * The entry for a key in the role cache, completed with the role once it has been built.
+     */
+    private static final class RoleLoad extends SubscribableListener<Role> {
+        @Nullable
+        Role completedRole() {
+            if (isSuccess() == false) {
+                return null;
+            }
+            try {
+                return rawResult();
+            } catch (Exception e) {
+                throw new AssertionError("a successful load has a result", e);
+            }
+        }
+    }
+
+    private final ThreadContext threadContext;
+
+    /**
      * Maps each key in {@link #roles} to its token. Read without the monitor, but only modified under it, alongside {@link #roles},
      * so it holds exactly the keys of {@link #roles}. A reader can find a token whose role has just been removed; it then misses.
      */
     private final ConcurrentHashMap<ProjectScoped<RoleKey>, InternedKey> interned = new ConcurrentHashMap<>();
 
     // All fields below are guarded by this object's monitor
-    private final Map<InternedKey, Role> roles;
+    private final Map<InternedKey, RoleLoad> roles;
     private final Map<ProjectScoped<String>, Boolean> negativeLookups;
     private final Map<ProjectId, Long> projectGenerations = new HashMap<>();
     private long globalGeneration;
 
     /**
-     * @param maximumRoles           the maximum number of cached roles, or a negative value for no limit
+     * @param maximumRoles           the maximum number of cached roles, including loads in flight, or a negative value for no limit
      * @param maximumNegativeLookups the maximum number of cached negative lookups, or a negative value for no limit
+     * @param threadContext          the context in which each caller of {@link #getOrLoad} is completed
      */
-    GuardedRoleCaches(int maximumRoles, int maximumNegativeLookups) {
+    GuardedRoleCaches(int maximumRoles, int maximumNegativeLookups, ThreadContext threadContext) {
+        this.threadContext = Objects.requireNonNull(threadContext);
         this.roles = leastRecentlyUsedMap(maximumRoles, token -> interned.remove(token.key, token));
         this.negativeLookups = leastRecentlyUsedMap(maximumNegativeLookups, key -> {});
     }
@@ -125,16 +175,118 @@ final class GuardedRoleCaches {
         }
     }
 
+    /**
+     * Completes {@code listener} with the cached role for the key, or otherwise with the role built by {@code loader}. Concurrent
+     * misses for the same key share one invocation of {@code loader}, and all of them receive its role or failure.
+     * <p>
+     * A caller whose key has a completed load is completed inline. Otherwise it is completed on the thread that completes the load,
+     * but in its own thread context. The load is shared, so it runs detached from the context of the caller that starts it; the
+     * stash keeps the project id, which the loader needs to resolve the project's roles.
+     */
+    void getOrLoad(ProjectId projectId, RoleKey roleKey, RoleLoader loader, ActionListener<Role> listener) {
+        // Hashing and comparing the key happen here, outside the monitor
+        final ProjectScoped<RoleKey> key = new ProjectScoped<>(projectId, roleKey);
+        final Lookup lookup = findOrInsert(key, interned.get(key));
+        lookup.load().addListener(listener, EsExecutors.DIRECT_EXECUTOR_SERVICE, threadContext);
+        if (lookup.inserted() == false) {
+            return;
+        }
+
+        final RoleLoad newLoad = lookup.load();
+        final InternedKey token = lookup.token();
+        final Generation generation = lookup.generation();
+        // Completed in an empty context, so callers cannot inherit response headers from the completing thread
+        final ActionListener<LoadedRole> completionListener = new ContextPreservingActionListener<>(
+            threadContext::newEmptyContext,
+            ActionListener.wrap(loaded -> {
+                complete(projectId, token, newLoad, generation, loaded);
+                newLoad.onResponse(loaded.role());
+            }, e -> {
+                removeLoad(token, newLoad);
+                newLoad.onFailure(e);
+            })
+        );
+        try (ThreadContext.StoredContext ignored = threadContext.stashContext()) {
+            ActionListener.run(completionListener, loader::load);
+        }
+    }
+
+    /**
+     * The entry a caller of {@link #getOrLoad} subscribes to. If the caller inserted it, and so must run the load, {@code token} and
+     * {@code generation} are what the load needs to complete it; otherwise they are {@code null}.
+     */
+    private record Lookup(RoleLoad load, @Nullable InternedKey token, @Nullable Generation generation) {
+        boolean inserted() {
+            return token != null;
+        }
+    }
+
+    /**
+     * Returns the entry for {@code key}, inserting a new load if there is none. {@code existingToken} is the token for the key that
+     * the caller read outside the monitor, if any; it may since have been removed.
+     */
+    private synchronized Lookup findOrInsert(ProjectScoped<RoleKey> key, @Nullable InternedKey existingToken) {
+        final RoleLoad existing = existingToken == null ? null : roles.get(existingToken);
+        if (existing != null) {
+            return new Lookup(existing, null, null);
+        }
+        // Interned under the monitor so that the table never holds a token that is absent from the role cache. On a miss the key
+        // is hashed under the monitor; a hit, the common case, does not pay for it.
+        final InternedKey token = interned.computeIfAbsent(key, InternedKey::new);
+        final RoleLoad raced = roles.get(token);
+        if (raced != null) {
+            return new Lookup(raced, null, null);
+        }
+        final RoleLoad load = new RoleLoad();
+        roles.put(token, load);
+        // Captured before any source is consulted (resolving the key reads the negative-lookup cache)
+        return new Lookup(load, token, generation(key.projectId()));
+    }
+
+    /**
+     * Removes the completed load from the role cache if its role must not be cached, and otherwise records the names it found
+     * missing unless an invalidation has moved the generation since the load captured it.
+     */
+    private synchronized void complete(ProjectId projectId, InternedKey token, RoleLoad load, Generation generation, LoadedRole loaded) {
+        if (loaded.cacheable() == false) {
+            removeLoad(token, load);
+            return;
+        }
+        if (generation.equals(generation(projectId)) == false) {
+            logger.trace(
+                "not caching missing roles [{}] in project [{}] because the caches were invalidated while they were resolved",
+                loaded.missingNames(),
+                projectId
+            );
+            return;
+        }
+        for (String name : loaded.missingNames()) {
+            negativeLookups.put(new ProjectScoped<>(projectId, name), Boolean.TRUE);
+        }
+    }
+
+    /**
+     * Removes {@code load} from the role cache, unless an invalidation or eviction already has; in that case another load may now
+     * occupy the key.
+     */
+    private synchronized void removeLoad(InternedKey token, RoleLoad load) {
+        if (roles.remove(token, load)) {
+            interned.remove(token.key, token);
+        }
+    }
+
+    // for testing
     @Nullable
     Role getRole(ProjectId projectId, RoleKey roleKey) {
-        // Hashing and comparing the key happen here, outside the monitor
         final InternedKey token = interned.get(new ProjectScoped<>(projectId, roleKey));
         if (token == null) {
             return null;
         }
+        final RoleLoad load;
         synchronized (this) {
-            return roles.get(token);
+            load = roles.get(token);
         }
+        return load == null ? null : load.completedRole();
     }
 
     synchronized boolean isNegativelyCached(ProjectId projectId, String roleName) {
@@ -142,30 +294,9 @@ final class GuardedRoleCaches {
         return negativeLookups.get(new ProjectScoped<>(projectId, roleName)) != null;
     }
 
-    /**
-     * Captures the current generation for the given project. Must be called before the resolution consults any role source,
-     * including the negative-lookup cache, for the check in {@link #putIfCurrent} to be meaningful.
-     */
-    synchronized Generation generation(ProjectId projectId) {
+    private Generation generation(ProjectId projectId) {
+        assert Thread.holdsLock(this);
         return new Generation(projectGenerations.getOrDefault(projectId, 0L), globalGeneration);
-    }
-
-    /**
-     * Caches the built role and records the role names that were not found, unless an invalidation has moved the generation
-     * since {@code observed} was captured. If another resolution already cached a role, retains that instance and its warmed caches.
-     *
-     * @return {@code true} if the generation is still current, {@code false} if the entries were discarded because of an invalidation
-     */
-    synchronized boolean putIfCurrent(Generation observed, ProjectId projectId, RoleKey roleKey, Role role, Set<String> missing) {
-        if (observed.equals(generation(projectId)) == false) {
-            return false;
-        }
-        // Interned under the monitor so that the table never holds a token that is absent from the role cache
-        roles.putIfAbsent(interned.computeIfAbsent(new ProjectScoped<>(projectId, roleKey), InternedKey::new), role);
-        for (String name : missing) {
-            negativeLookups.put(new ProjectScoped<>(projectId, name), Boolean.TRUE);
-        }
-        return true;
     }
 
     synchronized void invalidateAll() {
@@ -185,8 +316,8 @@ final class GuardedRoleCaches {
         removeRoles(eq(projectId));
         negativeLookups.keySet().removeIf(eq(projectId));
         projectGenerations.remove(projectId);
-        // Resolutions still in flight for the removed project captured a per-project generation that is now forgotten;
-        // advancing the global generation keeps them from repopulating the caches
+        // Loads still in flight for the removed project captured a per-project generation that is now forgotten; advancing the
+        // global generation keeps them from recording missing names
         globalGeneration++;
     }
 
@@ -202,7 +333,7 @@ final class GuardedRoleCaches {
         globalGeneration++;
     }
 
-    // for testing
+    // for testing; includes loads in flight
     synchronized List<ProjectScoped<RoleKey>> cachedRoleKeys() {
         return roles.keySet().stream().map(token -> token.key).toList();
     }
